@@ -1,0 +1,6 @@
+file "$(TOP)/db/tomoScan_step.template"
+{
+pattern
+{  P,       R}
+{2bmb:, TomoScan:}
+}

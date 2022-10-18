@@ -960,10 +960,10 @@ class TomoScan():
         remaining_time = (elapsed_time * (num_images - num_collected) /
                           max(float(num_collected), 1))
         collect_progress = str(num_collected) + '/' + str(num_images)
-        log.info('Collected %s', collect_progress)
+        # log.info('Collected %s', collect_progress)
         self.epics_pvs['ImagesCollected'].put(collect_progress)
         save_progress = str(num_saved) + '/' + str(num_to_save)
-        log.info('Saved %s', save_progress)
+        # log.info('Saved %s', save_progress)
         self.epics_pvs['ImagesSaved'].put(save_progress)
         self.epics_pvs['ElapsedTime'].put(str(timedelta(seconds=int(elapsed_time))))
         self.epics_pvs['RemainingTime'].put(str(timedelta(seconds=int(remaining_time))))

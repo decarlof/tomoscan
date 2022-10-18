@@ -163,7 +163,7 @@ class TomoScanSTEP(TomoScan):
         log.info('collect projections')
         super().collect_projections()
 
-        self.set_trigger_mode('Software', self.num_angles)
+        self.set_trigger_mode('Internal', self.num_angles)
            
         # Start the camera
         self.epics_pvs['CamAcquire'].put('Acquire')

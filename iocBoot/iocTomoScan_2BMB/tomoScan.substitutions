@@ -26,3 +26,17 @@ pattern
 {  P,      R,           BEAM_READY,     READY_VALUE,       CLOSE_FAST_SHUTTER,        CLOSE_FAST_VALUE,      OPEN_FAST_SHUTTER,       OPEN_FAST_VALUE,         SHUTTER_STATUS,}
 {2bmb:, TomoScan:, ACIS:ShutterPermit,       1,         2bma:B_shutter:close.VAL,            1,           2bma:B_shutter:open.VAL,           1,           PA:02BM:STA_A_FES_OPEN_PL,}
 }
+
+file "$(TOP)/db/tomoScanStream.template"
+{
+pattern
+{  P,        R,           PVA_PLUGIN,     ROI_PLUGIN,     CB_PLUGIN,          PVA_STREAM,}
+{2bmb:, TomoScan:, 2bmbSP2:Pva1:,  2bmbSP2:ROI1:,  2bmbSP2:CB1:, 2bmb:TomoScan:,}
+}
+
+file "$(TOP)/db/tomoScan_step.template"
+{
+pattern
+{  P,       R}
+{2bmb:, TomoScan:}
+}

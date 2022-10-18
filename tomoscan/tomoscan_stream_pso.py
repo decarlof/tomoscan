@@ -156,7 +156,7 @@ class TomoScanStreamPSO(TomoScan):
         log.info('collect projections')
         super().collect_projections()
 
-        log.info('taxi before starting capture')
+        log.info('taxi before starting collection')
         # Taxi before starting capture
         self.epics_pvs['Rotation'].put(self.epics_pvs['PSOStartTaxi'].get(), wait=True)
 
@@ -661,14 +661,16 @@ class TomoScanStreamPSO(TomoScan):
             
             num_captured += self.epics_pvs['StreamNumCaptured'].get()
 
-            self.epics_pvs['StreamCapture'].put('Done')        
             self.epics_pvs['StreamFileName'].put(basename)
             self.epics_pvs['StreamNumTotalCaptured'].put(num_captured)
     
             #VN: Enable CB buffer again because if number of elements in CB==0 then the plugin will automatically turn off
             self.epics_pvs['CBEnableCallbacks'].put('Enable')
-
-        self.epics_pvs['StreamMessage'].put('Done')        
+            self.epics_pvs['StreamMessage'].put('Done')            
+        else:
+            log.info('Skip capturing projections')            
+        self.epics_pvs['StreamCapture'].put('Done')        
+        
 
 
     def copy_flat_dark_to_hdf(self):
@@ -768,14 +770,17 @@ class TomoScanStreamPSO(TomoScan):
 
             self.epics_pvs['HDF5Location'].put(self.epics_pvs['HDF5ProjectionLocation'].value)
             self.epics_pvs['FrameType'].put('Projection', wait=True)
-            self.epics_pvs['StreamRetakeDark'].put('Done')   
+            
             
             self.epics_pvs['FPFileName'].put(file_name, wait=True)
             self.epics_pvs['FPFileTemplate'].put(file_template, wait=True)        
             self.epics_pvs['FPAutoIncrement'].put(autoincrement, wait=True) 
             
-            self.broadcast_dark()
-        self.epics_pvs['StreamMessage'].put('Done')        
+            self.broadcast_dark()            
+            self.epics_pvs['StreamMessage'].put('Done')        
+        else:
+            log.info('Skip retake dark')
+        self.epics_pvs['StreamRetakeDark'].put('Done')   
  
 
     def retake_flat(self):
@@ -829,15 +834,17 @@ class TomoScanStreamPSO(TomoScan):
             self.epics_pvs['ScanStatus'].put('Collecting projections', wait=True)
             self.epics_pvs['HDF5Location'].put(self.epics_pvs['HDF5ProjectionLocation'].value)        
             self.epics_pvs['FrameType'].put('Projection', wait=True)
-            self.epics_pvs['StreamRetakeFlat'].put('Done')   
             
             self.epics_pvs['FPFileName'].put(file_name, wait=True)
             self.epics_pvs['FPFileTemplate'].put(file_template, wait=True)        
             self.epics_pvs['FPAutoIncrement'].put(autoincrement, wait=True) 
             
             self.broadcast_flat()
-        self.epics_pvs['StreamMessage'].put('Done')                
-
+            
+            self.epics_pvs['StreamMessage'].put('Done')                
+        else:
+            log.info('Skip retake flat')
+        self.epics_pvs['StreamRetakeFlat'].put('Done')               
 
     def change_cbsize(self):
         """ Change pre-buffer size        

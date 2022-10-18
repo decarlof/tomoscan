@@ -1,0 +1,7 @@
+file "$(TOP)/db/tomoScanStream.template"
+{
+pattern
+{  P,        R,           PVA_PLUGIN,     ROI_PLUGIN,     CB_PLUGIN,          PVA_STREAM,}
+{2bmb:, TomoScan:, 2bmbSP2:Pva1:,  2bmbSP2:ROI1:,  2bmbSP2:CB1:, 2bmb:TomoScan:,}
+}
+
