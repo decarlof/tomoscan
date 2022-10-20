@@ -468,7 +468,12 @@ class TomoScan2BM():
         self.add_theta()
 
         log.info('Adding a frame from the IP camera')
-        ret, frame = cv2.VideoCapture('http://remotecam02bmb:Cam-02-bm-b@164.54.113.162/cgi-bin/mjpeg?stream=1').read()# we should hide the password
+        ret, frame = cv2.VideoCapture('http://remotecam02bmb:Cam-02-bm-b@164.54.113.162/cgi-bin/mjpeg?stream=1').read()# we should hide the password (how about using one of the line below?)
+        # station A        
+        # ret, frame = cv2.VideoCapture('http://' + self.access_dic['webcam_a_username'] +':' + self.access_dic['webcam_a_password'] + '@' + self.access_dic['webcam_a_ip_address'] + '/cgi-bin/mjpeg?stream=1').read()
+        # station B        
+        # ret, frame = cv2.VideoCapture('http://' + self.access_dic['webcam_b_username'] +':' + self.access_dic['webcam_b_password'] + '@' + self.access_dic['webcam_b_ip_address'] + '/cgi-bin/mjpeg?stream=1').read()
+
         
         if ret==True:
             full_file_name = self.epics_pvs['FPFullFileName'].get(as_string=True)
