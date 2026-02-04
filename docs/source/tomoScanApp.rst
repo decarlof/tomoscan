@@ -2,9 +2,9 @@
 tomoScanApp EPICS application
 *****************************
 
-.. 
-   toctree::
+.. toctree::
    :hidden:
+   :maxdepth: 1
 
    tomoScan.template
    tomoScan_PSO.template
@@ -18,7 +18,13 @@ tomoScanApp EPICS application
    tomoScan_13BM_PSO_settings.req
    tomoScan_2BM_settings.req
    tomoScan.substitutions
-
+   tomoScan_13BM_settings.req
+   tomoScan_32ID.template
+   tomoScan_32ID_settings.req
+   tomoScan_6BM.template
+   tomoScan_6BM_settings.req
+   tomoScan_7BM.template
+   tomoScan_7BM_settings.req
 
 tomoscan includes a complete example EPICS application, including:
 
@@ -1239,13 +1245,6 @@ Pause
   * - $(P)$(R)Pause
     - bo
     - Flag allowing the scan to be paused. Choices are "GO" and "PAUSE". When set to "PAUSE", the scan will pause at begin_scan(), set the camera to continuous mode, open the shutter, and start the camera. This is used when running a long series of scans (XANES, for example), allowing for tuning and maximization of the flat-field intensity.
-
-
- record(bo, "$(P)$(R)Pause")
-  280  {
-  281     field(ZNAM, "GO")
-  282:    field(ONAM, "PAUSE")
-  283  }
 
 tomoScan_32ID_settings.req
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
