@@ -176,26 +176,25 @@ class TomoScanFPGAPSO(TomoScan):
         self.epics_pvs['TriggerSource'].put(1, wait=True)
         self.epics_pvs['FPGAMUX2'].put("1", wait=True)
 
-        log.info('***********   Program FPGA    *************')
-        mode = int(self.epics_pvs['InterlacedMode'].get())  # 0..4
-
+        log.info('Reading user inputs')
+        mode = int(self.epics_pvs['InterlacedMode'].get())                               # 0..4
         self.rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
-
-        N = int(self.epics_pvs['InterlacedNumAngles'].get())         # images per rotation
-        K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())  # number of rotations
-        self.num_angles = int(N * K)                                  # total images
-        req_pct = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())  # 0..100
-        req_eff = max(0.0, min(1.0, req_pct / 100.0))                           # 0..1
+        self.rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())      # needed by _compute_senses()
+        N = int(self.epics_pvs['InterlacedNumAngles'].get())                             # images per rotation
+        K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())                      # number of rotations
+        self.num_angles = int(N * K)                                                     # total images
+        req_pct = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())           # 0..100
+        req_eff = max(0.0, min(1.0, req_pct / 100.0))                                    # 0..1
 
         if self.num_angles > 0 and self.epics_pvs['ProgramPSO'].get():
+            # Set rotary stage motor speed
+            # Compute frame time and angular step sizes (used for speed/efficiency selection only,
+            # not for PSO window sizing).
             frame_time = self.compute_frame_time()
-            # steps_deg here represent the desired angular spacings for the interlaced pattern,
-            # used ONLY for speed/efficiency selection (not for sizing the PSO window).
             angles_deg, steps_deg = self.compute_interlaced_angles(mode, self.num_angles)
             min_step = float(np.min(steps_deg))
             max_step = float(np.max(steps_deg))
 
-            # ---- Set motor speed ----
             if mode == 0:
                 # Uniform: safe speed => 100% efficiency
                 self.motor_speed = abs(min_step) / frame_time
@@ -211,24 +210,24 @@ class TomoScanFPGAPSO(TomoScan):
             log.info("InterlacedMode=%d: min_step=%g deg, max_step=%g deg", mode, min_step, max_step)
             log.info("Chosen motor_speed=%g deg/s (frame_time=%g s, threshold=%g deg)",
                      self.motor_speed, frame_time, thr_deg)
+            self.epics_pvs['RotationSpeed'].put(self.motor_speed)
+            # Calculate the PSO Window step
+            # Uniform mode uses min_step as the slot size; for uniform patterns min_step == 360/N,
+            # so the two branches are numerically identical. For interlaced modes min_step is much
+            # smaller (the tightest interlaced gap, ~360/(N*K)), which would make the window too
+            # small, so 360/N is used explicitly instead.
+            # All interlaced modes (1, 2, 3, ...) use 360/N: the PSO window must span
+            # the full 360*K sweep, and 360/N * N*K = 360*K gives the correct window size.
             if mode == 0:
-                # Uniform multiturn: window sized by per-rotation step; continuous sweep like Timbir
                 window_step = float(min_step)
-                keep_speed = True
-            elif mode == 1:
-                # Timbir: continuous 0->360K sweep; window must cover full travel.
-                # Use nominal per-rotation spacing, not the smallest interlaced increment.
-                window_step = 360.0 / float(N)
-                keep_speed = True
             else:
-                # For future interlaced modes: default to full-sweep sizing as well.
                 window_step = 360.0 / float(N)
-                keep_speed = True
+            keep_speed = True
             self.rotation_step = float(window_step)
             # NOTE: PV name is misleading now; ideally add a dedicated PV for window_step.
             self.epics_pvs['InterlacedPSOWindowStep'].put(self.rotation_step)
 
-            # ---- Create list of interlaced angles ----
+            # Create list of interlaced angles 
             interlaced_theta = None
             if mode == 0:
                 delta_theta = 360.0 / N
@@ -238,7 +237,6 @@ class TomoScanFPGAPSO(TomoScan):
             elif mode == 2:
                 interlaced_theta = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=self.rotation_start)
             elif mode == 3:
-                # Van der Corput: acquisition-order unwrapped list (do NOT sort here)
                 interlaced_theta = self.angles_corput_unwrapped(N=N, K=K, start_deg=self.rotation_start)
             if interlaced_theta is not None:
                 mode_names = {0: 'uniform', 1: 'timbir', 2: 'golden-angle', 3: 'van-der-corput'}
@@ -247,6 +245,10 @@ class TomoScanFPGAPSO(TomoScan):
                 log.info("theta around boundary=%s", interlaced_theta[N:N+10].tolist())
                 log.info("theta last10=%s", interlaced_theta[-10:].tolist())
 
+            # Program PSO and FPGA
+            # compute_positions_PSO sets encoder counts, taxi positions and motor stop.
+            # program_PSO4FPGA arms the PSO to send a dense coarse pulse stream.
+            # program_fpga_* downselects from that stream the exact trigger angles for the chosen mode.
             self.compute_positions_PSO(
                 interlaced_angles_deg=interlaced_theta,
                 keep_motor_speed=keep_speed
@@ -584,8 +586,10 @@ class TomoScanFPGAPSO(TomoScan):
         pso_distance = 33  # make this a PV later if desired
 
         # Move to arming reference position
+        self.epics_pvs['ScanStatus'].put('Returning to start position')
         self.epics_pvs['RotationSpeed'].put(self.max_rotation_speed)
         self.epics_pvs['Rotation'].put(self.rotation_start_new, wait=True, timeout=600)
+        self.epics_pvs['ScanStatus'].put('Programming PSO for FPGA (coarse stream)')
         self.epics_pvs['RotationSpeed'].put(self.motor_speed)
 
         # Reset PSO

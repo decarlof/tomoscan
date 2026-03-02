@@ -22,3 +22,4 @@ $(P)$(R)InterlacedRotationStop
 $(P)$(R)InterlacedMode
 $(P)$(R)InterlacedEfficiencyRequested
 $(P)$(R)InterlacedEfficiencyCalculated
+$(P)$(R)MotionBlurr

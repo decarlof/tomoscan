@@ -92,3 +92,10 @@ record(ao, "$(P)$(R)InterlacedEfficiencyCalculated")
 {
    field(PREC,  "0")
 }
+
+record(ao, "$(P)$(R)MotionBlurr")
+{
+   field(DESC, "Motion blurr")
+   field(PREC, "2")
+   field(EGU,  "pixels")
+}
