@@ -545,9 +545,12 @@ class TomoScan2BM(TomoScanFPGAPSO):
 
         if ret==True:
             full_file_name = self.epics_pvs['FPFullFileName'].get(as_string=True)
-            with h5py.File(full_file_name,'r+') as fid:
-                fid.create_dataset('exchange/web_camera_frame', data=frame)
-            log.info('The frame was added')
+            try:
+                with h5py.File(full_file_name,'r+') as fid:
+                    fid.create_dataset('exchange/web_camera_frame', data=frame)
+                log.info('The frame was added')
+            except Exception as e:
+                log.warning('The web camera frame was not added to %s: %s', full_file_name, e)
         else:
             log.warning('The frame was not added')
         
@@ -590,8 +593,21 @@ class TomoScan2BM(TomoScanFPGAPSO):
         log.info("add theta")
 
         full_file_name = self.epics_pvs["FPFullFileName"].get(as_string=True)
-        if not os.path.exists(full_file_name):
-            log.error("Failed adding theta. %s file does not exist", full_file_name)
+        log.info("add_theta: FPFullFileName repr=%r", full_file_name)
+        # Wait up to 5 s for the HDF plugin to finalize the file after FPCaptureRBV=0
+        for _retry in range(5):
+            if os.path.exists(full_file_name):
+                break
+            log.warning("add_theta: file not yet visible (attempt %d/5), waiting 1 s ...", _retry + 1)
+            time.sleep(1)
+        else:
+            log.error(
+                "Failed adding theta: file not accessible at path %r. "
+                "Is the tomoscan Python server running on the detector computer "
+                "(the machine where %s is locally mounted)? "
+                "theta will NOT be written to the HDF5 file.",
+                full_file_name, os.path.dirname(full_file_name)
+            )
             return
 
         try:

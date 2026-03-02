@@ -41,6 +41,7 @@ class TomoScanFPGAPSO(TomoScan):
         self.epics_pvs['CamUniqueIdMode'].put('Camera',wait=True)
 
         self.epics_pvs['InterlacedEfficiencyRequested'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['TriggerSource'].add_callback(self.pv_callback_trigger_source)
 
     def pv_callback_efficiency(self, pvname=None, value=None, char_value=None, **kw):
         """
@@ -51,7 +52,7 @@ class TomoScanFPGAPSO(TomoScan):
           * This is a PREDICTION only (no PSO/FPGA reprogramming, no motor moves).
           * It depends on compute_frame_time(), which depends on camera configuration
             (e.g. pixel format). Early in IOC startup or before the camera is configured,
-            compute_frame_time() can raise KeyError (observed: KeyError '0').
+            compute_frame_time() can raise KeyError (observed: 1KeyError '0').
           * In that case we skip the update rather than crashing the callback thread.
         """
         log.debug('pv_callback_efficiency pvName=%s, value=%s, char_value=%s', pvname, value, char_value)
@@ -103,6 +104,19 @@ class TomoScanFPGAPSO(TomoScan):
             # Never let a callback exception kill the CA callback thread
             log.error("pv_callback_efficiency failed", exc_info=True)
 
+    def pv_callback_trigger_source(self, pvname=None, value=None, char_value=None, **kw):
+        """Sync FPGAMUX2 whenever TriggerSource changes (e.g. from medm screen).
+        TriggerSource=0 (PSO) -> MUX=0; TriggerSource=1 (FPGA) -> MUX=1.
+        """
+        try:
+            mux_val = "1" if int(value) == 1 else "0"
+            # Use wait=False: calling put(wait=True) inside a CA callback deadlocks
+            # (the put-complete event needs the CA thread, which is stuck in this callback).
+            self.epics_pvs['FPGAMUX2'].put(mux_val, wait=False)
+            log.info('TriggerSource -> %s: FPGAMUX2 set to %s', value, mux_val)
+        except Exception:
+            log.error("pv_callback_trigger_source failed", exc_info=True)
+
     def collect_static_frames(self, num_frames):
         """Collects num_frames images in "Internal" trigger mode for dark fields and flat fields.
 
@@ -143,148 +157,145 @@ class TomoScanFPGAPSO(TomoScan):
 
 
     def begin_scan(self):
+        if self.scan_is_running:
+            log.warning('begin_scan already in progress — ignoring duplicate call')
+            return
+        self.scan_is_running = True   # claim early; super().begin_scan() sets it again (harmless)
         log.info('begin scan')
-        super().begin_scan()
+        self.epics_pvs['ScanStatus'].put('Beginning scan')
+        # NOTE: super().begin_scan() is called AFTER FPGA/PSO programming below.
+        # It blocks ~30s on FPFilePath.put(wait=True); deferring it keeps FPGA
+        # programming fast (matches original behaviour).
+        #
+        # super().begin_scan() normally sets self.max_rotation_speed from RotationMaxSpeed.
+        # Read it here so PSO/FPGA programming (compute_positions_PSO, program_PSO4FPGA) can
+        # use it; super() will re-read it later (harmless).
+        self.max_rotation_speed = self.epics_pvs['RotationMaxSpeed'].value
 
-        if self.epics_pvs['TriggerSource'].get() == 0:  # PSO (classic)
-            self.epics_pvs['InterlacedPSOWindowStep'].put(360. / self.epics_pvs['InterlacedNumAngles'].get())
-            self.rotation_start = self.epics_pvs['InterlacedRotationStart'].get()
-            self.rotation_step  = self.epics_pvs['InterlacedPSOWindowStep'].get()
-            self.num_angles     = int(self.epics_pvs['InterlacedNumAngles'].get() *
-                                      self.epics_pvs['InterlacedNumberOfRotation'].get())
-            self.rotation_stop  = self.epics_pvs['InterlacedRotationStop'].get()
+        # Force FPGA trigger mode for this scan; reset to 0 in end_scan()
+        self.epics_pvs['TriggerSource'].put(1, wait=True)
+        self.epics_pvs['FPGAMUX2'].put("1", wait=True)
 
-            self.epics_pvs['FPGAMUX2'].put("0", wait=True)
-            log.info('***********     PSO     *************')
-            time.sleep(0.1)
+        log.info('***********   Program FPGA    *************')
+        mode = int(self.epics_pvs['InterlacedMode'].get())  # 0..4
 
-            self.compute_positions_PSO()
-            self.epics_pvs['RotationSpeed'].put(self.motor_speed)
+        self.rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
+        self.rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())
 
-            if self.num_angles > 0 and self.epics_pvs['ProgramPSO'].get():
-                self.cleanup_PSO()
-                self.program_PSO()
+        N = int(self.epics_pvs['InterlacedNumAngles'].get())         # images per rotation
+        K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())  # number of rotations
+        self.num_angles = int(N * K)                                  # total images
+        log.error("DEBUG Timbir: mode=%d N=%d K=%d num_angles=%d", mode, N, K, self.num_angles)
+        req_pct = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())  # 0..100
+        req_eff = max(0.0, min(1.0, req_pct / 100.0))                           # 0..1
+
+        if self.num_angles > 0 and self.epics_pvs['ProgramPSO'].get():
+            frame_time = self.compute_frame_time()
+            # steps_deg here represent the desired angular spacings for the interlaced pattern,
+            # used ONLY for speed/efficiency selection (not for sizing the PSO window).
+            angles_deg, steps_deg = self.compute_interlaced_angles(mode, self.num_angles)
+            min_step = float(np.min(steps_deg))
+            max_step = float(np.max(steps_deg))
+
+            # ---- Set motor speed ----
+            if mode == 0:
+                # Uniform: safe speed => 100% efficiency
+                self.motor_speed = abs(min_step) / frame_time
+                achieved = 1.0
+                thr_deg = self.motor_speed * frame_time
             else:
-                log.warning('skip programPSO')
+                # Interlaced: fastest constant speed meeting requested efficiency
+                self.motor_speed, achieved, thr_deg = self.choose_speed_for_efficiency(
+                    steps_deg, frame_time, req_eff
+                )
+            self.epics_pvs['InterlacedEfficiencyCalculated'].put(achieved * 100.0, wait=True)
+            log.info("Efficiency requested=%g%% calculated=%g%%", req_pct, achieved * 100.0)
+            log.info("InterlacedMode=%d: min_step=%g deg, max_step=%g deg", mode, min_step, max_step)
+            log.info("Chosen motor_speed=%g deg/s (frame_time=%g s, threshold=%g deg)",
+                     self.motor_speed, frame_time, thr_deg)
+            if mode == 0:
+                # Uniform multiturn: window sized by per-rotation step; continuous sweep like Timbir
+                window_step = float(min_step)
+                keep_speed = True
+            elif mode == 1:
+                # Timbir: continuous 0->360K sweep; window must cover full travel.
+                # Use nominal per-rotation spacing, not the smallest interlaced increment.
+                window_step = 360.0 / float(N)
+                keep_speed = True
+            else:
+                # For future interlaced modes: default to full-sweep sizing as well.
+                window_step = 360.0 / float(N)
+                keep_speed = True
+            self.rotation_step = float(window_step)
+            # NOTE: PV name is misleading now; ideally add a dedicated PV for window_step.
+            self.epics_pvs['InterlacedPSOWindowStep'].put(self.rotation_step)
 
-        else:  # FPGA
-            log.info('***********     FPGA    *************')
-            self.epics_pvs['FPGAMUX2'].put("1", wait=True)
-            log.info(self.epics_pvs['FPGAMUX2'].get())
+            # ---- Create list of interlaced angles ----
+            interlaced_theta = None
+            if mode == 0:
+                delta_theta = 360.0 / N
+                interlaced_theta = self.angles_uniform_multiturn_unwrapped(N=N, K=K, start_deg=self.rotation_start, delta_theta=delta_theta)
+            elif mode == 1:
+                interlaced_theta = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=self.rotation_start)
+                log.warning("DEBUG Timbir theta: first10=%s", interlaced_theta[:10].tolist())
+                log.warning("DEBUG Timbir theta: around boundary=%s", interlaced_theta[N:N+10].tolist())
+                log.warning("DEBUG Timbir theta: last10=%s", interlaced_theta[-10:].tolist())
+            elif mode == 2:
+                interlaced_theta = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=self.rotation_start)
+            elif mode == 3:
+                # Van der Corput: acquisition-order unwrapped list (do NOT sort here)
+                interlaced_theta = self.angles_corput_unwrapped(N=N, K=K, start_deg=self.rotation_start)
+            # interlaced_theta has just been built (mode 0/1/2/3/4) and motor_speed finalized
+            if interlaced_theta is not None:
+                th = np.asarray(interlaced_theta, dtype=np.float64)
+                dth = np.diff(th)  # acquisition-order unwrapped spacing (deg)
+                log.warning("DEBUG theta spacing (time-order): min=%g deg, mean=%g deg, max=%g deg",
+                            float(dth.min()), float(dth.mean()), float(dth.max()))
+                log.warning("DEBUG motor_speed=%g deg/s, frame_time=%g s, v*frame=%g deg",
+                            float(self.motor_speed), float(frame_time), float(self.motor_speed * frame_time))
 
-            mode = int(self.epics_pvs['InterlacedMode'].get())  # 0..4
+                dth_sorted = np.diff(np.sort(th))
+                log.warning("DEBUG theta spacing (sorted): min=%g deg, mean=%g deg, max=%g deg",
+                            float(dth_sorted.min()), float(dth_sorted.mean()), float(dth_sorted.max()))
+            self.compute_positions_PSO(
+                interlaced_angles_deg=interlaced_theta,
+                keep_motor_speed=keep_speed
+            )
 
-            self.rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
-            self.rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())
+            log.warning("DEBUG sizes: N=%d K=%d num_angles=%d len(theta)=%d",
+                        N, K, self.num_angles, len(self.theta))
+            log.warning("DEBUG len(interlaced_theta)=%s", None if interlaced_theta is None else len(interlaced_theta))
+            log.warning("DEBUG self.theta after compute_positions_PSO first10=%s",
+                        np.asarray(self.theta)[:10].tolist())
+            log.warning("theta[0:5]=%s", self.theta[:5].tolist())
+            log.warning("theta[N:N+5]=%s", self.theta[N:N+5].tolist())
 
-            N = int(self.epics_pvs['InterlacedNumAngles'].get())          # images per rotation
-            K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())  # number of rotations
-            self.num_angles = int(N * K)                                  # total images
-            log.error("DEBUG Timbir: mode=%d N=%d K=%d num_angles=%d", mode, N, K, self.num_angles)
-            req_pct = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())  # 0..100
-            req_eff = max(0.0, min(1.0, req_pct / 100.0))                           # 0..1
+            self.cleanup_PSO()
+            self.program_PSO4FPGA()
 
-            if self.num_angles > 0 and self.epics_pvs['ProgramPSO'].get():
-                frame_time = self.compute_frame_time()
-                # steps_deg here represent the desired angular spacings for the interlaced pattern,
-                # used ONLY for speed/efficiency selection (not for sizing the PSO window).
-                angles_deg, steps_deg = self.compute_interlaced_angles(mode, self.num_angles)
-                min_step = float(np.min(steps_deg))
-                max_step = float(np.max(steps_deg))
-
-                # ---- Choose motor speed ----
-                if mode == 0:
-                    # Uniform: safe speed => 100% efficiency
-                    self.motor_speed = abs(min_step) / frame_time
-                    achieved = 1.0
-                    thr_deg = self.motor_speed * frame_time
-                else:
-                    # Interlaced (Timbir, etc.): fastest constant speed meeting requested efficiency
-                    self.motor_speed, achieved, thr_deg = self.choose_speed_for_efficiency(
-                        steps_deg, frame_time, req_eff
-                    )
-                self.epics_pvs['InterlacedEfficiencyCalculated'].put(achieved * 100.0, wait=True)
-                log.info("Efficiency requested=%g%% calculated=%g%%", req_pct, achieved * 100.0)
-                log.info("InterlacedMode=%d: min_step=%g deg, max_step=%g deg", mode, min_step, max_step)
-                log.info("Chosen motor_speed=%g deg/s (frame_time=%g s, threshold=%g deg)",
-                         self.motor_speed, frame_time, thr_deg)
-                if mode == 0:
-                    # Uniform: window sized like uniform sampling
-                    window_step = float(min_step)
-                    keep_speed = False
-                elif mode == 1:
-                    # Timbir: continuous 0->360K sweep; window must cover full travel.
-                    # Use nominal per-rotation spacing, not the smallest interlaced increment.
-                    window_step = 360.0 / float(N)
-                    keep_speed = True
-                else:
-                    # For future interlaced modes: default to full-sweep sizing as well.
-                    window_step = 360.0 / float(N)
-                    keep_speed = True
-                self.rotation_step = float(window_step)
-                # NOTE: PV name is misleading now; ideally add a dedicated PV for window_step.
-                self.epics_pvs['InterlacedPSOWindowStep'].put(self.rotation_step)
-
-                interlaced_theta = None
-                if mode == 1:
-                    interlaced_theta = self.angles_multitimbir_unwrapped(
-                        N=N, K=K, start_deg=self.rotation_start, sort_monotonic=False
-                    )
-                    log.warning("DEBUG Timbir theta: first10=%s", interlaced_theta[:10].tolist())
-                    log.warning("DEBUG Timbir theta: around boundary=%s", interlaced_theta[N:N+10].tolist())
-                    log.warning("DEBUG Timbir theta: last10=%s", interlaced_theta[-10:].tolist())
-                elif mode == 2:
-                    interlaced_theta = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=self.rotation_start, sort_monotonic=False)
-
-                elif mode == 3:
-                    # Van der Corput: acquisition-order unwrapped list (do NOT sort here)
-                    interlaced_theta = self.angles_corput_unwrapped(
-                        N=N, K=K, start_deg=self.rotation_start
-                    )
-                # interlaced_theta has just been built (mode 1/2) and motor_speed finalized
-                if interlaced_theta is not None:
-                    th = np.asarray(interlaced_theta, dtype=np.float64)
-                    dth = np.diff(th)  # acquisition-order unwrapped spacing (deg)
-                    log.warning("DEBUG theta spacing (time-order): min=%g deg, mean=%g deg, max=%g deg",
-                                float(dth.min()), float(dth.mean()), float(dth.max()))
-                    log.warning("DEBUG motor_speed=%g deg/s, frame_time=%g s, v*frame=%g deg",
-                                float(self.motor_speed), float(frame_time), float(self.motor_speed * frame_time))
-
-                    dth_sorted = np.diff(np.sort(th))
-                    log.warning("DEBUG theta spacing (sorted): min=%g deg, mean=%g deg, max=%g deg",
-                                float(dth_sorted.min()), float(dth_sorted.mean()), float(dth_sorted.max()))
-                self.compute_positions_PSO(
-                    interlaced_angles_deg=interlaced_theta,
-                    keep_motor_speed=keep_speed
+            if mode == 0:
+                self.program_fpga_uniform()
+            elif mode == 1:
+                self.program_fpga_timbir()
+            elif mode == 2:
+                self.program_fpga_goldenangle()
+            elif mode == 3:
+                self.program_fpga_corput()
+            else:
+                raise ValueError(
+                    f"Unknown/unsupported InterlacedMode={mode} "
+                    "(0=uniform, 1=timbir, 2=golden-angle, 3=van-der-corput supported)"
                 )
 
-                log.warning("DEBUG sizes: N=%d K=%d num_angles=%d len(theta)=%d",
-                            N, K, self.num_angles, len(self.theta))
-                log.warning("DEBUG len(interlaced_theta)=%s", None if interlaced_theta is None else len(interlaced_theta))
-                log.warning("DEBUG self.theta after compute_positions_PSO first10=%s",
-                            np.asarray(self.theta)[:10].tolist())
-                # --- END BLOCK ---
-
-                log.warning("theta[0:5]=%s", self.theta[:5].tolist())
-                log.warning("theta[N:N+5]=%s", self.theta[N:N+5].tolist())
-
-
-                self.cleanup_PSO()
-                self.program_PSO4FPGA()
-
-                if mode == 0:
-                    self.program_fpga_uniform()
-                elif mode == 1:
-                    self.program_fpga_timbir()
-                elif mode == 2:
-                    self.program_fpga_goldenangle()
-                elif mode == 3:
-                    self.program_fpga_corput()
-                else:
-                    raise ValueError(
-                        f"Unknown/unsupported InterlacedMode={mode} "
-                        "(0=uniform, 1=timbir, 2=golden-angle, 3=van-der-corput supported)"
-                    )
+        # FPGA/PSO programming is done.  Now call super().begin_scan() which blocks
+        # ~30s on FPFilePath.put(wait=True) / FPFileName.put(wait=True) while it
+        # sets up the file writer and reads scan parameters into instance variables
+        # (dark_field_mode, num_dark_fields, num_flat_fields, flat_field_mode, …).
+        # super() also resets self.num_angles from the NumAngles PV (= N, not N×K),
+        # so we save and restore our N×K total here.
+        _num_angles_fpga = int(self.num_angles)   # N*K set by FPGA programming above
+        super().begin_scan()
+        self.num_angles = _num_angles_fpga         # restore N*K (super() sets N from NumAngles PV)
 
         # Always (re)arm HDF capture with the final total_images.
         #
@@ -332,6 +343,7 @@ class TomoScanFPGAPSO(TomoScan):
 
         self.epics_pvs['FPNumCapture'].put(int(self.total_images), wait=True)
         self.epics_pvs['FPCapture'].put('Capture', wait=True)
+        self.epics_pvs['ScanStatus'].put('HDF capture armed')
 
         log.info("FPNumCapture RBV=%s", self.epics_pvs['FPNumCapture'].get())
         log.info("FPCapture RBV=%s", self.epics_pvs['FPCapture'].get(as_string=True))
@@ -352,12 +364,14 @@ class TomoScanFPGAPSO(TomoScan):
         K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())
 
         if mode == 0:
-            angles = start + np.arange(n, dtype=np.float64) * (360.0 / N)
+            delta_theta = 360.0 / N
+            angles = self.angles_uniform_multiturn_unwrapped(N=N, K=K, start_deg=start,
+                                                              delta_theta=delta_theta)
             if angles.size != n:
-                raise ValueError(f"Uniform produced {angles.size} angles but expected {n}")
+                raise ValueError(f"Uniform multiturn produced {angles.size} angles but expected {n}")
             steps = np.diff(angles)
             if np.any(steps <= 0):
-                raise ValueError("Uniform angles must be strictly increasing.")
+                raise ValueError("Uniform multiturn angles must be strictly increasing.")
             return angles, steps
         elif mode == 1:
             # acquisition-order timbir angles (NOT monotonic)
@@ -447,6 +461,11 @@ class TomoScanFPGAPSO(TomoScan):
 
         # Move the sample in.  Could be out if scan was aborted while taking flat fields
         self.move_sample_in()
+
+        # Reset MUX and TriggerSource to 0 so classic tomoscan_pso.py finds the hardware
+        # correctly configured if the IOC is restarted with a different scan class.
+        self.epics_pvs['FPGAMUX2'].put("0", wait=True)
+        self.epics_pvs['TriggerSource'].put(0, wait=True)
 
         # Call the base class method
         super().end_scan()
@@ -657,47 +676,60 @@ class TomoScanFPGAPSO(TomoScan):
               self.pso_window_counts_fpga
           - FPGA uses PSO pulses as its input clock (indices are PSO-pulse indices).
         """
-        self.epics_pvs['ScanStatus'].put('Programming FPGA (uniform)')
+        self.epics_pvs['ScanStatus'].put('Programming FPGA (uniform multiturn)')
 
-        # Total number of PSO pulses available in the window
         pso_distance = int(getattr(self, "pso_distance_fpga", 33))
         window_counts = int(getattr(self, "pso_window_counts_fpga", 0))
         if window_counts <= 0:
             raise ValueError("pso_window_counts_fpga not set. Call program_PSO4FPGA() first.")
 
         total_pso_pulses = window_counts // pso_distance
-        n_triggers = int(self.num_angles)
 
-        if total_pso_pulses <= n_triggers:
-            raise ValueError(f"total_pso_pulses ({total_pso_pulses}) must be > total_images ({n_triggers})")
+        N = int(self.epics_pvs['InterlacedNumAngles'].get())
+        K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())
+        n = N * K
 
-        # Build uniform indices (0-based) into PSO-pulse stream
-        step = int(round(total_pso_pulses / n_triggers))
-        idx = np.arange(n_triggers, dtype=np.int64) * step
+        if total_pso_pulses <= n:
+            raise ValueError(f"total_pso_pulses ({total_pso_pulses}) must be > n_triggers ({n})")
 
-        overflow = int(idx[-1] - (total_pso_pulses - 1))
-        if overflow > 0:
-            idx = idx - overflow
-            if idx[0] < 0:
-                idx = np.round(np.linspace(0, total_pso_pulses - 1, n_triggers)).astype(np.int64)
+        start_deg   = float(self.epics_pvs['InterlacedRotationStart'].get())
+        delta_theta = 360.0 / N
 
-        # enforce strictly increasing
-        for i in range(1, len(idx)):
-            if idx[i] <= idx[i-1]:
-                idx[i] = idx[i-1] + 1
-        if idx[-1] >= total_pso_pulses:
-            raise ValueError("Could not build valid FPGA index list inside total_pso_pulses.")
+        # Acquisition-order angles with per-rotation fractional offset
+        angles_deg = self.angles_uniform_multiturn_unwrapped(N=N, K=K, start_deg=start_deg,
+                                                              delta_theta=delta_theta)
+        if angles_deg.size != n:
+            raise ValueError(f"Uniform multiturn angle list length mismatch: expected {n}, got {angles_deg.size}")
 
-        self.pulse_indices = idx.tolist()
+        # Map degrees -> encoder counts -> PSO pulse index
+        counts_per_deg = float(self.epics_pvs['PSOCountsPerRotation'].get()) / 360.0
+        rel_counts = np.round((angles_deg - start_deg) * counts_per_deg).astype(np.int64)
+        pulse_idx  = (rel_counts // pso_distance).astype(np.int64)
+
+        if pulse_idx.min() < 0 or pulse_idx.max() >= total_pso_pulses:
+            raise ValueError(
+                "Uniform multiturn triggers fall outside the PSO window. "
+                "Check PSOCountsPerRotation and PSO window sizing."
+            )
+
+        # Enforce strictly increasing
+        for i in range(1, n):
+            if pulse_idx[i] <= pulse_idx[i - 1]:
+                pulse_idx[i] = pulse_idx[i - 1] + 1
+
+        if pulse_idx[-1] >= total_pso_pulses:
+            raise ValueError(
+                "Not enough PSO pulses in window to realize uniform multiturn after quantization fixes."
+            )
+
+        self.pulse_indices = pulse_idx.tolist()
 
         log.info("program_fpga_uniform:")
-        log.info("  pso_distance=%d counts/PSO-pulse", pso_distance)
-        log.info("  window_counts=%d, total_pso_pulses=%d", window_counts, total_pso_pulses)
-        log.info("  n_triggers=%d, step~=%d", n_triggers, step)
+        log.info("  N=%d K=%d n=%d delta_theta=%g deg", N, K, n, delta_theta)
+        log.info("  pso_distance=%d counts/PSO-pulse, total_pso_pulses=%d", pso_distance, total_pso_pulses)
         log.info("  first 10 indices=%s", self.pulse_indices[:10])
         log.info("  last 10 indices=%s", self.pulse_indices[-10:])
 
-        # Write BRAM (indices -> delays -> RAM)
         self.write_PSO_array()
 
     def cleanup_PSO(self):
@@ -910,16 +942,45 @@ class TomoScanFPGAPSO(TomoScan):
         if k <= 0 or (k & (k - 1)) != 0:
             raise ValueError("InterlacedNumberOfRotation (K) must be a power of 2")
 
-    def angles_multitimbir_unwrapped(self, N: int, K: int, start_deg: float = 0.0, sort_monotonic: bool = False):
+    def angles_uniform_multiturn_unwrapped(self, N: int, K: int, start_deg: float = 0.0,
+                                            delta_theta: float = None) -> np.ndarray:
+        """Uniform multi-turn angles with per-rotation fractional offset.
+
+        Each rotation k contributes N angles shifted by k/K * delta_theta from
+        the base uniform grid and by 360*k degrees (multi-turn motor position).
+        After K rotations the sorted angles fill [start_deg, start_deg+360) at
+        spacing delta_theta/K.
+
+        Parameters
+        ----------
+        N : int            Number of angles per rotation.
+        K : int            Number of rotations.
+        start_deg : float  Starting angle in degrees.
+        delta_theta : float, optional
+            Angular step size. If None, computed from
+            (InterlacedRotationStop - InterlacedRotationStart) / N.
+
+        Returns
+        -------
+        np.ndarray, shape (N*K,)
+            Acquisition-order unwrapped angles (rotation 0 block, rotation 1, ...).
+        """
+        if delta_theta is None:
+            delta_theta = 360.0 / N
+        n = np.arange(N, dtype=np.float64)
+        blocks = [start_deg + (n + k / K) * delta_theta + 360.0 * k for k in range(K)]
+        return np.concatenate(blocks).astype(np.float64)
+
+    def angles_multitimbir_unwrapped(self, N: int, K: int, start_deg: float = 0.0):
         """
         Multi-timbir pattern over K full rotations.
 
-        Returns angles in degrees (unwrapped), length N*K.
+        Returns angles in degrees (unwrapped), length N*K, in acquisition order
+        (rotation 0 block, then rotation 1 block, ...).
 
-        By default returns ACQUISITION ORDER (rotation 0 block, then rotation 1 block, ...),
-        which preserves the 'progressively fill intermediate angles' behavior.
-
-        If sort_monotonic=True, returns a sorted (monotonic) copy.
+        The returned array is always monotonically increasing: each block k covers
+        [start_deg + 360*k, start_deg + 360*(k+1)) with uniform spacing 360/N,
+        so concatenating blocks in order yields a globally sorted sequence.
         """
         self._ensure_power_of_two(K)
         bits = int(np.log2(K))
@@ -932,10 +993,7 @@ class TomoScanFPGAPSO(TomoScan):
                 angle_deg = idx * 360.0 / (N * K)   # [0, 360)
                 theta.append(start_deg + base_turn + angle_deg)
 
-        theta = np.asarray(theta, dtype=np.float64)
-        if sort_monotonic:
-            theta = np.sort(theta)
-        return theta
+        return np.asarray(theta, dtype=np.float64)
 
 
     # --- 3) Correct program_fpga_timbir(): preserve N*K triggers, no sort/unique ---
@@ -1009,17 +1067,16 @@ class TomoScanFPGAPSO(TomoScan):
 
         self.write_PSO_array()
 
-    def angles_goldenangle_unwrapped(self, N: int, K: int, start_deg: float = 0.0, sort_monotonic: bool = False):
+    def angles_goldenangle_unwrapped(self, N: int, K: int, start_deg: float = 0.0):
         """
         Golden-angle interlaced pattern over K rotations.
 
-        Returns unwrapped angles (deg), length N*K.
+        Returns unwrapped angles (deg), length N*K, in acquisition order
+        (rotation 0 block, then rotation 1 block, ...).
 
-        Acquisition order is rotation blocks:
-          [rotation0 N angles in 0..360), then rotation1 block, ...]
-        Each block is sorted within [0,360) (as in your reference), then shifted by +360*k.
-
-        If sort_monotonic=True, returns a globally sorted copy (monotonic list).
+        The returned array is always monotonically increasing: each block k is sorted
+        within [0°, 360°) and then shifted by start_deg + 360°*k, so concatenating
+        blocks in order yields a globally sorted sequence.
         """
         if N <= 0 or K <= 0:
             raise ValueError("N and K must be > 0")
@@ -1039,15 +1096,10 @@ class TomoScanFPGAPSO(TomoScan):
                 offset = (k / (N + 1.0)) * 360.0 * phi_inv
                 block = np.sort((base + offset) % 360.0)
 
-            # unwrap by making each rotation block strictly increasing in time
+            # unwrap: shift block into [start_deg + 360*k, start_deg + 360*(k+1))
             theta.extend((start_deg + 360.0 * k + block).tolist())
 
-        theta = np.asarray(theta, dtype=np.float64)
-
-        if sort_monotonic:
-            theta = np.sort(theta)
-
-        return theta
+        return np.asarray(theta, dtype=np.float64)
 
     def program_fpga_goldenangle(self):
         """
