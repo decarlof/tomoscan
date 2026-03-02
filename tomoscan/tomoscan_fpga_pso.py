@@ -180,12 +180,10 @@ class TomoScanFPGAPSO(TomoScan):
         mode = int(self.epics_pvs['InterlacedMode'].get())  # 0..4
 
         self.rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
-        self.rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())
 
         N = int(self.epics_pvs['InterlacedNumAngles'].get())         # images per rotation
         K = int(self.epics_pvs['InterlacedNumberOfRotation'].get())  # number of rotations
         self.num_angles = int(N * K)                                  # total images
-        log.error("DEBUG Timbir: mode=%d N=%d K=%d num_angles=%d", mode, N, K, self.num_angles)
         req_pct = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())  # 0..100
         req_eff = max(0.0, min(1.0, req_pct / 100.0))                           # 0..1
 
@@ -237,38 +235,22 @@ class TomoScanFPGAPSO(TomoScan):
                 interlaced_theta = self.angles_uniform_multiturn_unwrapped(N=N, K=K, start_deg=self.rotation_start, delta_theta=delta_theta)
             elif mode == 1:
                 interlaced_theta = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=self.rotation_start)
-                log.warning("DEBUG Timbir theta: first10=%s", interlaced_theta[:10].tolist())
-                log.warning("DEBUG Timbir theta: around boundary=%s", interlaced_theta[N:N+10].tolist())
-                log.warning("DEBUG Timbir theta: last10=%s", interlaced_theta[-10:].tolist())
             elif mode == 2:
                 interlaced_theta = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=self.rotation_start)
             elif mode == 3:
                 # Van der Corput: acquisition-order unwrapped list (do NOT sort here)
                 interlaced_theta = self.angles_corput_unwrapped(N=N, K=K, start_deg=self.rotation_start)
-            # interlaced_theta has just been built (mode 0/1/2/3/4) and motor_speed finalized
             if interlaced_theta is not None:
-                th = np.asarray(interlaced_theta, dtype=np.float64)
-                dth = np.diff(th)  # acquisition-order unwrapped spacing (deg)
-                log.warning("DEBUG theta spacing (time-order): min=%g deg, mean=%g deg, max=%g deg",
-                            float(dth.min()), float(dth.mean()), float(dth.max()))
-                log.warning("DEBUG motor_speed=%g deg/s, frame_time=%g s, v*frame=%g deg",
-                            float(self.motor_speed), float(frame_time), float(self.motor_speed * frame_time))
+                mode_names = {0: 'uniform', 1: 'timbir', 2: 'golden-angle', 3: 'van-der-corput'}
+                log.info("InterlacedMode=%d (%s) N=%d K=%d", mode, mode_names.get(mode, 'unknown'), N, K)
+                log.info("theta first10=%s", interlaced_theta[:10].tolist())
+                log.info("theta around boundary=%s", interlaced_theta[N:N+10].tolist())
+                log.info("theta last10=%s", interlaced_theta[-10:].tolist())
 
-                dth_sorted = np.diff(np.sort(th))
-                log.warning("DEBUG theta spacing (sorted): min=%g deg, mean=%g deg, max=%g deg",
-                            float(dth_sorted.min()), float(dth_sorted.mean()), float(dth_sorted.max()))
             self.compute_positions_PSO(
                 interlaced_angles_deg=interlaced_theta,
                 keep_motor_speed=keep_speed
             )
-
-            log.warning("DEBUG sizes: N=%d K=%d num_angles=%d len(theta)=%d",
-                        N, K, self.num_angles, len(self.theta))
-            log.warning("DEBUG len(interlaced_theta)=%s", None if interlaced_theta is None else len(interlaced_theta))
-            log.warning("DEBUG self.theta after compute_positions_PSO first10=%s",
-                        np.asarray(self.theta)[:10].tolist())
-            log.warning("theta[0:5]=%s", self.theta[:5].tolist())
-            log.warning("theta[N:N+5]=%s", self.theta[N:N+5].tolist())
 
             self.cleanup_PSO()
             self.program_PSO4FPGA()
@@ -323,9 +305,6 @@ class TomoScanFPGAPSO(TomoScan):
             log.error("Expected projections=%d (attempted=%d) pulses/s=%.1f Tmin=%.4f",
                       expected_proj, info["attempted"], info["pulses_per_s"], info["Tmin_s"])
 
-            # NOTE: keep FPNumCapture as an upper bound (proj=self.num_angles) to avoid truncation.
-            # If you set proj = expected_proj here, you risk stopping the HDF plugin early.
-            # proj = int(expected_proj)
 
         self.total_images = int(proj)
 
@@ -375,7 +354,7 @@ class TomoScanFPGAPSO(TomoScan):
             return angles, steps
         elif mode == 1:
             # acquisition-order timbir angles (NOT monotonic)
-            angles = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=start, sort_monotonic=False)
+            angles = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=start)
             if angles.size != n:
                 raise ValueError(f"Timbir produced {angles.size} angles but expected {n}")
 
@@ -386,7 +365,7 @@ class TomoScanFPGAPSO(TomoScan):
                 raise ValueError("Timbir monotonic angles must be strictly increasing after sort.")
             return angles, steps
         elif mode == 2:
-            angles = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=start, sort_monotonic=False)
+            angles = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=start)
             if angles.size != n:
                 raise ValueError(f"GoldenAngle produced {angles.size} angles but expected {n}")
 
@@ -514,23 +493,16 @@ class TomoScanFPGAPSO(TomoScan):
         time.sleep(0.5)
         log.info('start fly scan')
 
-        # Start fly scan
-        log.info('start fly scan')
         if self.epics_pvs['TriggerSource'].get() == 1:
             self.fpga_reset_and_enable(settle_s=0.05)
         self.epics_pvs['Rotation'].put(self.epics_pvs['PSOEndTaxi'].get())
-        time_per_angle = self.compute_frame_time()
 
-        # safer estimate of the timeout time
+        # timeout based on actual motion distance and speed
         start = float(self.epics_pvs['PSOStartTaxi'].get())
         end   = float(self.epics_pvs['PSOEndTaxi'].get())
         motion_time = abs(end - start) / float(self.motor_speed)
-
         timeout = motion_time + 120.0
         self.wait_camera_done(timeout)
-
-        # collection_time = self.num_angles * time_per_angle
-        # self.wait_camera_done(collection_time + 1000.)
 
     def program_PSO(self):
         '''Performs programming of PSO output on the Aerotech driver.
@@ -810,60 +782,6 @@ class TomoScanFPGAPSO(TomoScan):
         else:
             self.theta = np.asarray(interlaced_angles_deg, dtype=np.float32)
 
-    def program_fpga(self):
-        """
-        Build pulse_indices (0-based) for FPGA downselect such that the selected dense pulses
-        match classic Aerotech behavior: PSODISTANCE FIXED counts_per_step, using the same
-        window math as program_PSO/program_PSO4FPGA.
-
-        Index 0 == first dense pulse after arming == at window_start.
-        """
-
-        # How many triggers we want the FPGA to pass
-        n = int(self.num_angles)  # or self.num_angles if that is what you truly want
-        if n <= 0:
-            raise ValueError(f"total_images must be > 0, got {n}")
-
-        overall_sense, _ = self._compute_senses()
-
-        step = int(round(abs(float(self.epics_pvs['PSOEncoderCountsPerStep'].get()))))
-        if step <= 0:
-            raise ValueError(f"PSOEncoderCountsPerStep must be > 0, got {step}")
-
-        # Must match your PSO window programming
-        half = int(round(step / 2.0))
-        range_length = step * int(self.num_angles)
-
-        range_start = -half * overall_sense
-        if overall_sense > 0:
-            window_start = range_start
-            window_end = window_start + range_length
-        else:
-            window_end = range_start
-            window_start = window_end - range_length  # ensures start < end
-
-        # Dense-pulse index corresponding to the arm reference (encoder offset 0)
-        offset = int(-window_start)
-
-        # Select n pulses, spaced by 'step', starting at the classic first pulse location
-        pulse_indices = (offset + np.arange(n, dtype=np.int64) * step).tolist()
-
-        # Sanity: indices must fall inside the window span (ignore your ±5 margin here)
-        window_span = int(window_end - window_start)  # should equal range_length
-        if pulse_indices[0] < 0 or pulse_indices[-1] >= window_span:
-            raise ValueError(
-                "Computed pulse indices fall outside the PSO window. "
-                f"first={pulse_indices[0]}, last={pulse_indices[-1]}, "
-                f"window_span={window_span}, offset={offset}, step={step}, sense={overall_sense}"
-            )
-
-        self.pulse_indices = pulse_indices
-        log.info("program_fpga (uniform/classic-match): n=%d step=%d sense=%d offset=%d", n, step, overall_sense, offset)
-        log.info("pulse_indices[0:10]=%s", self.pulse_indices[:10])
-        log.info("pulse_indices[-10:]=%s", self.pulse_indices[-10:])
-
-        self.write_PSO_array()
-
     def writeRAM_memPulseSeq(self):
         # note: BRAM ena signal (memPulseSeq_ENA) always 1.
 
@@ -1029,7 +947,7 @@ class TomoScanFPGAPSO(TomoScan):
         start_deg = float(self.epics_pvs['InterlacedRotationStart'].get())
 
         # 1) Timbir acquisition-order angles (do NOT sort)
-        angles_deg = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=start_deg, sort_monotonic=False)
+        angles_deg = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=start_deg)
 
         if angles_deg.size != n:
             raise ValueError(f"Timbir angle list length mismatch: expected {n}, got {angles_deg.size}")
@@ -1129,7 +1047,7 @@ class TomoScanFPGAPSO(TomoScan):
         start_deg = float(self.epics_pvs['InterlacedRotationStart'].get())
 
         # Acquisition-order golden-angle unwrapped list
-        angles_deg = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=start_deg, sort_monotonic=False)
+        angles_deg = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=start_deg)
         if angles_deg.size != n:
             raise ValueError(f"GoldenAngle angle list length mismatch: expected {n}, got {angles_deg.size}")
 
@@ -1222,52 +1140,6 @@ class TomoScanFPGAPSO(TomoScan):
         }
         return expected, info
 
-
-
-    def generate_interlaced_corput(self, delta_theta=None):
-        N = int(self.InterlacedNumAnglesPerRotation)
-        K = int(self.InterlacedNumberOfRotation)
-        start = float(self.InterlacedRotationStart)
-        stop = float(self.InterlacedRotationStop) if self.InterlacedRotationStop is not None else self.stop_angle()
-
-        if delta_theta is None:
-            delta_theta = (stop - start) / (N - 1) if N > 1 else 0.0
-        delta_theta = float(delta_theta)
-        self.InterlacedRotationStepNominal = delta_theta
-
-        base = start + np.arange(N, dtype=float) * delta_theta
-
-        bitsK = int(np.ceil(np.log2(K)))
-        MK = 1 << bitsK
-        p_corput = np.array([self.bit_reverse(i, bitsK) for i in range(MK)])
-        p_corput = p_corput[p_corput < K]
-        assert len(p_corput) == K
-
-        offsets = (p_corput / K) * delta_theta
-
-        bitsN = int(np.ceil(np.log2(N)))
-        MN = 1 << bitsN
-        indices = np.array([self.bit_reverse(i, bitsN) for i in range(MN)])
-        indices = indices[indices < N]
-
-        angles_all = []
-        for k in range(K):
-            offset = offsets[k]
-            loop_angles = base[indices] + offset
-
-            loop_angles_mod = np.mod(loop_angles - start, 360.0) + start
-            loop_angles_unwrapped = loop_angles_mod + 360.0 * k
-            angles_all.append(loop_angles_unwrapped)
-
-        theta_unwrapped_unsorted = np.concatenate(angles_all)
-        theta_unwrapped = np.sort(theta_unwrapped_unsorted)
-
-        self.theta_interlaced = np.mod(theta_unwrapped_unsorted - start, 360.0) + start
-        self.theta_interlaced_unwrapped = theta_unwrapped.astype(float)
-        self.theta_monotonic = np.sort(self.theta_interlaced_unwrapped).astype(float)
-
-        self._update_interlaced_metrics()
-        return angles_all
 
 
     def angles_corput_unwrapped(self, N: int, K: int, start_deg: float = 0.0) -> np.ndarray:
