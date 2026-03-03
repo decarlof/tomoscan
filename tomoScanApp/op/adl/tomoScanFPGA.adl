@@ -1492,7 +1492,7 @@ composite {
 }
 "text update" {
 	object {
-		x=619
+		x=620
 		y=145
 		width=50
 		height=20
@@ -1568,7 +1568,7 @@ text {
 }
 "text entry" {
 	object {
-		x=619
+		x=620
 		y=165
 		width=50
 		height=20
@@ -1728,4 +1728,29 @@ text {
 		clr=14
 	}
 	textix="deg"
+}
+text {
+	object {
+		x=438
+		y=125
+		width=150
+		height=20
+	}
+	"basic attribute" {
+		clr=14
+	}
+	textix="Return to start"
+}
+menu {
+	object {
+		x=601
+		y=125
+		width=80
+		height=20
+	}
+	control {
+		chan="$(P)$(R)ReturnRotation"
+		clr=14
+		bclr=51
+	}
 }
