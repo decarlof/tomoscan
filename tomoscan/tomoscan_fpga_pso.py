@@ -177,6 +177,7 @@ class TomoScanFPGAPSO(TomoScan):
         self.epics_pvs['FPGAMUX2'].put("1", wait=True)
 
         log.info('Reading user inputs')
+        size_x = self.control_pvs['ArraySizeX_RBV'].get()                               # detector horizontal size [pixels]
         mode = int(self.epics_pvs['InterlacedMode'].get())                               # 0..4
         self.rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
         self.rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())      # needed by _compute_senses()
