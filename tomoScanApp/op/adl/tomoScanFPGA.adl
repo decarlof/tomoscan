@@ -1322,7 +1322,7 @@ text {
 		height=18
 	}
 	monitor {
-		chan="$(P)$(R)InterlacedPSOWindowStep"
+		chan="$(P)$(R)PSOSlotStep"
 		clr=14
 		bclr=51
 	}

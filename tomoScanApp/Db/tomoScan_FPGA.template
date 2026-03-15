@@ -49,7 +49,7 @@ record(ao, "$(P)$(R)InterlacedMinStep")
    field(PREC,  "3")
 }
 
-record(ao, "$(P)$(R)InterlacedPSOWindowStep")
+record(ao, "$(P)$(R)PSOSlotStep")
 {
    field(PREC,  "3")
 }

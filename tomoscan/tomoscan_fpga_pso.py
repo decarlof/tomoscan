@@ -225,8 +225,7 @@ class TomoScanFPGAPSO(TomoScan):
                 window_step = 360.0 / float(N)
             keep_speed = True
             self.rotation_step = float(window_step)
-            # NOTE: PV name is misleading now; ideally add a dedicated PV for window_step.
-            self.epics_pvs['InterlacedPSOWindowStep'].put(self.rotation_step)
+            self.epics_pvs['PSOSlotStep'].put(self.rotation_step)
 
             # Create list of interlaced angles 
             interlaced_theta = None
