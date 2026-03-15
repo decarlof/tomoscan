@@ -99,3 +99,9 @@ record(ao, "$(P)$(R)MotionBlurr")
    field(PREC, "2")
    field(EGU,  "pixels")
 }
+
+record(ao, "$(P)$(R)DroppedFrames")
+{
+   field(DESC, "Dropped frames (preview)")
+   field(PREC, "0")
+}

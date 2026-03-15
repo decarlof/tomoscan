@@ -1,6 +1,6 @@
 
 file {
-	name="/home/beams0/2BMB/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScanFPGA.adl"
+	name="/home/beams0/2BMB/epics/synApps/support/tomoscan/iocBoot/iocTomoScanFPGA_2BMB/../../tomoScanApp/op/adl/tomoScanFPGA.adl"
 	version=030111
 }
 display {
@@ -1303,7 +1303,7 @@ text {
 }
 text {
 	object {
-		x=488
+		x=563
 		y=215
 		width=60
 		height=20
@@ -1311,18 +1311,18 @@ text {
 	"basic attribute" {
 		clr=14
 	}
-	textix="Step"
+	textix="Dropped frms"
 	align="horiz. right"
 }
 "text update" {
 	object {
-		x=550
+		x=625
 		y=217
 		width=55
 		height=18
 	}
 	monitor {
-		chan="$(P)$(R)PSOSlotStep"
+		chan="$(P)$(R)DroppedFrames"
 		clr=14
 		bclr=51
 	}
@@ -1716,18 +1716,6 @@ text {
 		clr=14
 	}
 	textix="deg/s"
-}
-text {
-	object {
-		x=612
-		y=215
-		width=30
-		height=20
-	}
-	"basic attribute" {
-		clr=14
-	}
-	textix="deg"
 }
 text {
 	object {

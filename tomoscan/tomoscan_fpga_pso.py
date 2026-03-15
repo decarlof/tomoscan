@@ -41,68 +41,56 @@ class TomoScanFPGAPSO(TomoScan):
         self.epics_pvs['CamUniqueIdMode'].put('Camera',wait=True)
 
         self.epics_pvs['InterlacedEfficiencyRequested'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['InterlacedNumAngles'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['InterlacedNumberOfRotation'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['InterlacedMode'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['InterlacedRotationStart'].add_callback(self.pv_callback_efficiency)
+        self.epics_pvs['ExposureTime'].add_callback(self.pv_callback_efficiency)
         self.epics_pvs['TriggerSource'].add_callback(self.pv_callback_trigger_source)
 
     def pv_callback_efficiency(self, pvname=None, value=None, char_value=None, **kw):
-        """
-        EPICS callback: recompute InterlacedEfficiencyCalculated whenever the user changes
-        InterlacedEfficiencyRequested.
+        """Recompute scan preview PVs whenever any input parameter changes.
 
-        Notes / design:
-          * This is a PREDICTION only (no PSO/FPGA reprogramming, no motor moves).
-          * It depends on compute_frame_time(), which depends on camera configuration
-            (e.g. pixel format). Early in IOC startup or before the camera is configured,
-            compute_frame_time() can raise KeyError (observed: 1KeyError '0').
-          * In that case we skip the update rather than crashing the callback thread.
+        Writes: RotationSpeed, MotionBlurr, InterlacedScanTime,
+                InterlacedEfficiencyCalculated, DroppedFrames.
+        No PSO/FPGA reprogramming — preview only.
         """
-        log.debug('pv_callback_efficiency pvName=%s, value=%s, char_value=%s', pvname, value, char_value)
-
+        log.debug('pv_callback_efficiency pvName=%s', pvname)
+        if self.scan_is_running:
+            return
         try:
-            # Requested efficiency is entered by the user as percent (0..100)
-            req_pct = float(value if value is not None
-                            else self.epics_pvs['InterlacedEfficiencyRequested'].get())
-            req_eff = max(0.0, min(1.0, req_pct / 100.0))  # convert to 0..1
-
-            # Current mode and number of images (angles)
+            N    = int(self.epics_pvs['InterlacedNumAngles'].get())
+            K    = int(self.epics_pvs['InterlacedNumberOfRotation'].get())
             mode = int(self.epics_pvs['InterlacedMode'].get())
-            n = int(self.epics_pvs['InterlacedNumAngles'].get() *
-                    self.epics_pvs['InterlacedNumberOfRotation'].get())
+            rotation_start = float(self.epics_pvs['InterlacedRotationStart'].get())
+            rotation_stop  = float(self.epics_pvs['InterlacedRotationStop'].get())
+            exposure_time  = float(self.epics_pvs['ExposureTime'].get())
+            size_x         = int(self.control_pvs['ArraySizeX_RBV'].get())
+            req_pct        = float(self.epics_pvs['InterlacedEfficiencyRequested'].get())
 
-            # Not enough angles to define step sizes
-            if n <= 1:
-                self.epics_pvs['InterlacedEfficiencyCalculated'].put(0.0)
+            if N <= 0 or K <= 0:
                 return
 
-            # compute_frame_time() uses camera state (pixel format, readout table, etc.).
-            # It may fail if PVs are not initialized or are numeric-coded (e.g. '0').
-            try:
-                # frame_time = float(self.compute_frame_time())
-                frame_time = float(self.epics_pvs['ExposureTime'].get())
-            except KeyError as e:
-                # Camera not ready yet; don't spam the log at INFO/ERROR level.
-                log.debug("pv_callback_efficiency: compute_frame_time() not ready (KeyError=%s); skipping", e)
+            log.info('Preview inputs: N=%d K=%d mode=%d start=%.2f stop=%.2f exp=%.4f s size_x=%d req=%.1f%%',
+                     N, K, mode, rotation_start, rotation_stop, exposure_time, size_x, req_pct)
+
+            result = self._compute_scan_preview(
+                N, K, mode, rotation_start, rotation_stop,
+                exposure_time, size_x, req_pct)
+            if result is None:
                 return
 
-            # Build angles and step sizes (deg) for the selected interlaced mode
-            angles_deg, steps_deg = self.compute_interlaced_angles(mode, n)
+            self.epics_pvs['RotationSpeed'].put(result['velocity'])
+            self.epics_pvs['MotionBlurr'].put(result['blur_px'])
+            self.epics_pvs['InterlacedScanTime'].put(result['scan_time'])
+            self.epics_pvs['InterlacedEfficiencyCalculated'].put(result['efficiency'])
+            self.epics_pvs['DroppedFrames'].put(result['dropped'])
 
-            # Uniform mode: by design we run at the safe speed => 100% predicted efficiency
-            if mode == 0:
-                achieved = 1.0
-            else:
-                # Non-uniform modes: use your step-size based rule to compute predicted achieved efficiency
-                # for the fastest constant speed meeting requested efficiency.
-                motor_speed, achieved, thr = self.choose_speed_for_efficiency(steps_deg, frame_time, req_eff)
-
-            # Write calculated efficiency back in percent
-            self.epics_pvs['InterlacedEfficiencyCalculated'].put(achieved * 100.0)
-
-            log.debug("pv_callback_efficiency: requested=%g%% calculated=%g%% mode=%d n=%d frame_time=%g",
-                      req_pct, achieved * 100.0, mode, n, frame_time)
-
+            log.info('Preview: vel=%.4f°/s blur=%.2f px scan_time=%.1f s eff=%.1f%% dropped=%d',
+                     result['velocity'], result['blur_px'], result['scan_time'],
+                     result['efficiency'], result['dropped'])
         except Exception:
-            # Never let a callback exception kill the CA callback thread
-            log.error("pv_callback_efficiency failed", exc_info=True)
+            log.error('pv_callback_efficiency failed', exc_info=True)
 
     def pv_callback_trigger_source(self, pvname=None, value=None, char_value=None, **kw):
         """Sync FPGAMUX2 whenever TriggerSource changes (e.g. from medm screen).
@@ -116,6 +104,70 @@ class TomoScanFPGAPSO(TomoScan):
             log.info('TriggerSource -> %s: FPGAMUX2 set to %s', value, mux_val)
         except Exception:
             log.error("pv_callback_trigger_source failed", exc_info=True)
+
+    def _compute_scan_preview(self, N, K, mode, rotation_start, rotation_stop,
+                              exposure_time, size_x, req_pct):
+        """Compute scan preview parameters.
+
+        Uses the same angle-generation functions as the actual scan so the
+        preview is consistent with what the hardware will do.  Builds an
+        efficiency table over all unique acquisition-order angular gaps and
+        selects the last row whose efficiency meets req_pct.
+
+        Returns dict with keys: velocity, blur_px, scan_time, efficiency
+        or None if the mode/parameters are unsupported.
+        """
+        # Use the requested ExposureTime (already read from PV by the caller) plus the
+        # readout margin set by the last successful compute_frame_time() call.
+        # Avoids slow CamPixelFormat.get() calls; defaults to 1.01 (FLIR cameras).
+        readout_margin = getattr(self, 'readout_margin', 1.01)
+        frame_time = float(exposure_time) * readout_margin
+        if frame_time <= 0:
+            return None
+
+        total_frames = N * K
+
+        try:
+            if mode == 0:
+                flat = self.angles_uniform_multiturn_unwrapped(
+                    N=N, K=K, start_deg=rotation_start, delta_theta=360.0/N)
+            elif mode == 1:
+                flat = self.angles_multitimbir_unwrapped(N=N, K=K, start_deg=rotation_start)
+            elif mode == 2:
+                flat = self.angles_goldenangle_unwrapped(N=N, K=K, start_deg=rotation_start)
+            elif mode == 3:
+                flat = self.angles_corput_unwrapped(N=N, K=K, start_deg=rotation_start)
+            else:
+                return None
+        except Exception:
+            log.warning('_compute_scan_preview: angle generation failed', exc_info=True)
+            return None
+
+        delta         = np.diff(flat)
+        delta_rounded = np.round(delta, decimals=6)
+        unique_dt     = np.sort(np.unique(delta_rounded))
+        total_angle   = float(flat[-1] - flat[0])
+
+        if len(unique_dt) == 0 or unique_dt[0] <= 0:
+            return None
+
+        rows = []
+        for dt in unique_dt:
+            vel       = dt / frame_time
+            t_scan    = total_angle * frame_time / dt
+            collected = 1 + int(np.sum(delta_rounded >= dt))
+            dropped   = total_frames - collected
+            eff       = 100.0 * collected / total_frames
+            blur      = size_x * np.sin(np.radians(vel * exposure_time) / 2)
+            rows.append(dict(velocity=vel, scan_time=t_scan, efficiency=eff,
+                             blur_px=blur, dropped=dropped))
+
+        req = float(req_pct)
+        selected = None
+        for row in rows:
+            if row['efficiency'] >= req:
+                selected = row    # keep last qualifying row
+        return selected
 
     def collect_static_frames(self, num_frames):
         """Collects num_frames images in "Internal" trigger mode for dark fields and flat fields.
