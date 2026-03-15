@@ -10,7 +10,7 @@ import time
 import os
 import math
 import numpy as np
-from tomoscan.tomoscan import TomoScan
+from tomoscan.tomoscan import TomoScan, ScanAbortError, CameraTimeoutError
 from tomoscan import log
 import epics
 
@@ -551,12 +551,39 @@ class TomoScanFPGAPSO(TomoScan):
             self.fpga_reset_and_enable(settle_s=0.05)
         self.epics_pvs['Rotation'].put(self.epics_pvs['PSOEndTaxi'].get())
 
-        # timeout based on actual motion distance and speed
+        # Wait for camera with stall detection: once the motor should have stopped
+        # (elapsed > motion_time) exit early if no new frame arrives for 3 s.
+        # This avoids a long hang when frames are dropped (camera stays "Acquiring"
+        # waiting for triggers that will never come after the motor stops).
         start = float(self.epics_pvs['PSOStartTaxi'].get())
         end   = float(self.epics_pvs['PSOEndTaxi'].get())
         motion_time = abs(end - start) / float(self.motor_speed)
-        timeout = motion_time + 120.0
-        self.wait_camera_done(timeout)
+        timeout     = motion_time + 30.0   # hard safety cap (was 120 s)
+        stall_s     = 3.0                  # seconds without a new frame after motion done
+
+        t0              = time.time()
+        last_count      = -1
+        last_frame_time = t0
+        while True:
+            if self.epics_pvs['CamAcquireBusy'].value == 0:
+                break                      # camera finished normally
+            if not self.scan_is_running:
+                raise ScanAbortError       # abort requested
+            elapsed = time.time() - t0
+            if elapsed >= timeout:
+                raise CameraTimeoutError()
+            cur_count = self.epics_pvs['CamNumImagesCounter'].value
+            if cur_count != last_count:
+                last_count      = cur_count
+                last_frame_time = time.time()
+            elif elapsed > motion_time and (time.time() - last_frame_time) >= stall_s:
+                log.warning('Fly scan stalled at %d/%d frames after motor stop — stopping camera',
+                            cur_count, self.num_angles)
+                self.epics_pvs['CamAcquire'].put('Done')
+                time.sleep(0.5)
+                break
+            time.sleep(0.2)
+            self.update_status(t0)
 
     def program_PSO(self):
         '''Performs programming of PSO output on the Aerotech driver.
