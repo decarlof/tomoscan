@@ -95,6 +95,7 @@ main.py
 *.ipynb
 trunk
 /test/*.jpeg
+tomoscan/test/
 
 # Installer logs
 ##############
