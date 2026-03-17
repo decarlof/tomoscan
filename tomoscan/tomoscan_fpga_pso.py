@@ -376,6 +376,7 @@ class TomoScanFPGAPSO(TomoScan):
 
         self.epics_pvs['FPNumCapture'].put(int(self.total_images), wait=True)
         self.epics_pvs['FPCapture'].put('Capture', wait=True)
+        time.sleep(1.0)   # allow NFS file creation to complete before first trigger
         self.epics_pvs['ScanStatus'].put('HDF capture armed')
 
         log.info("FPNumCapture RBV=%s", self.epics_pvs['FPNumCapture'].get())
