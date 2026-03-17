@@ -12,7 +12,6 @@ import math
 import numpy as np
 from tomoscan.tomoscan import TomoScan, ScanAbortError, CameraTimeoutError
 from tomoscan import log
-import epics
 
 class TomoScanFPGAPSO(TomoScan):
     """Derived class used for tomography scanning with EPICS using Aerotech controllers with PSO and softGlueZynq FPGA trigger outputs
@@ -123,6 +122,7 @@ class TomoScanFPGAPSO(TomoScan):
         readout_margin = getattr(self, 'readout_margin', 1.01)
         frame_time = float(exposure_time) * readout_margin
         if frame_time <= 0:
+            log.warning('_compute_scan_preview: exposure_time=%.4f s — set ExposureTime > 0 to enable preview', exposure_time)
             return None
 
         total_frames = N * K
@@ -916,24 +916,24 @@ class TomoScanFPGAPSO(TomoScan):
 
     def fpga_reset_and_enable(self, settle_s=0.05):
         """Reset FPGA counters and enable trigger using the known-good sequence."""
-        reset_name  = "2bmbMZ1:SG:BUFFER-1_IN_Signal"
-        enable_name = "2bmbMZ1:SG:BUFFER-2_IN_Signal"
+        reset_pv  = self.epics_pvs['BUFFER-1_IN_Signal']
+        enable_pv = self.epics_pvs['BUFFER-2_IN_Signal']
 
         # reset: 0 -> 1!
-        epics.caput(reset_name, "0", wait=True)
+        reset_pv.put("0", wait=True)
         time.sleep(settle_s)
-        epics.caput(reset_name, "1!", wait=True)
+        reset_pv.put("1!", wait=True)
         time.sleep(settle_s)
 
         # enable: 0 -> 1
-        epics.caput(enable_name, "0", wait=True)
+        enable_pv.put("0", wait=True)
         time.sleep(settle_s)
-        epics.caput(enable_name, "1", wait=True)
+        enable_pv.put("1", wait=True)
         time.sleep(settle_s)
 
         log.info("FPGA reset/enable RBV: reset=%s enable=%s",
-                 epics.caget(reset_name, as_string=True),
-                 epics.caget(enable_name, as_string=True))
+                 reset_pv.get(as_string=True),
+                 enable_pv.get(as_string=True))
 
 
     def _bit_reverse(self, n: int, bits: int) -> int:
