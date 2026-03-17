@@ -1,6 +1,6 @@
 
 file {
-	name="/home/beams0/2BMB/epics/synApps/support/tomoscan/iocBoot/iocTomoScanFPGA_2BMB/../../tomoScanApp/op/adl/tomoScanFPGA.adl"
+	name="/home/beams19/USERTXM/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScanFPGA_32ID_main.adl"
 	version=030111
 }
 display {
@@ -1629,7 +1629,7 @@ text {
 		height=18
 	}
 	monitor {
-		chan="2bmbMZ1:SG:UpCntr-1_COUNTS"
+		chan="32idMZ1:SG:UpCntr-1_COUNTS"
 		clr=14
 		bclr=51
 	}
@@ -1644,7 +1644,7 @@ text {
 		height=18
 	}
 	monitor {
-		chan="2bmbMZ1:SG:UpCntr-2_COUNTS"
+		chan="32idMZ1:SG:UpCntr-2_COUNTS"
 		clr=14
 		bclr=51
 	}
@@ -1698,7 +1698,7 @@ text {
 		height=20
 	}
 	monitor {
-		chan="2bmb:m102.VELO"
+		chan="32idbTXM:ens:c1:m1.VELO"
 		clr=14
 		bclr=51
 	}
