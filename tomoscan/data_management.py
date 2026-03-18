@@ -27,19 +27,25 @@ from pathlib import Path
 from tomoscan import log
 
 
-def scp(fname_origin, remote_analysis_dir):
+def scp(fname_origin, remote_analysis_dir, local_top_dir=None):
 
     log.info(' ')
     log.info('  *** Data transfer')
 
     remote_server = remote_analysis_dir.split(':')[0]
-    remote_top_dir = remote_analysis_dir.split(':')[1]
+    remote_top_dir = Path(remote_analysis_dir.split(':')[1])
     log.info('      *** remote server: %s' % remote_server)
     log.info('      *** remote top directory: %s' % remote_top_dir)
 
     p = Path(fname_origin)
-    fname_destination = remote_analysis_dir + p.parts[-3] + '/' + p.parts[-2] + '/'
-    remote_dir = remote_top_dir + p.parts[-3] + '/' + p.parts[-2] + '/'
+    if local_top_dir is not None:
+        remote_relative_dir = p.parent.relative_to(local_top_dir)
+        remote_dir_path = remote_top_dir / remote_relative_dir
+        remote_dir = str(remote_dir_path) + '/'
+        fname_destination = remote_server + ':' + remote_dir
+    else:
+        remote_dir = str(remote_top_dir) + '/' + p.parts[-3] + '/' + p.parts[-2] + '/'
+        fname_destination = remote_analysis_dir + p.parts[-3] + '/' + p.parts[-2] + '/'
 
     log.info('      *** origin: %s' % fname_origin)
     log.info('      *** destination: %s' % fname_destination)
