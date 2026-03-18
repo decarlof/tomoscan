@@ -122,15 +122,15 @@ def create_remote_directory(remote_server, remote_dir):
 
 
 def start_remote_fdt(remote_server):
-    cmd_start_server = 'java -jar /APSshare/bin/fdt.jar -S >/tmp/fdt_server.log 2>&1'
+    cmd_start_server = "bash -c 'java -jar /APSshare/bin/fdt.jar -S >/tmp/fdt_server.log 2>&1'"
     cmd_kill_server = 'lsof -t -i:54321 | xargs -r kill -9'
     try:
         log.info('kill everything working with port 54321 on the server')
         log.info(f'ssh -f {remote_server} {cmd_kill_server}')
-        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server])        
-        time.sleep(1) 
-        log.info(f'      *** starting fdt server on {remote_server}')        
-        log.info(f'ssh -f {remote_server} {cmd_start_server}')        
+        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server])
+        time.sleep(1)
+        log.info(f'      *** starting fdt server on {remote_server}')
+        log.info(f'ssh -f {remote_server} {cmd_start_server}')
         subprocess.check_call(['ssh', '-f', remote_server, cmd_start_server])
         log.info(f'      *** starting fdt server on {remote_server}: Done!')
         time.sleep(5)        
