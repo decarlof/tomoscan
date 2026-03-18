@@ -20,8 +20,9 @@ with remote_analysis_dir formatted as tomo@handyn:/local/data/
 
 import os
 import subprocess
-from pathlib import Path
+import threading
 import time
+from pathlib import Path
 
 from tomoscan import log
 
@@ -141,14 +142,38 @@ def start_remote_fdt(remote_server):
 def start_fdt_transfer(remote_server, remote_dir, local_fname):
 
     remote_server = remote_server.split('@')[-1]
-    cmd = f'java -jar /APSshare/bin/fdt.jar -c {remote_server} -d {remote_dir} {local_fname} &'
-    try:
-        log.info(f'      *** starting fdt transfer to {remote_server}')
-        log.info(cmd)
-        os.system(cmd)
-        log.info(f'      *** starting fdt transfer to {remote_server}: Done!')
-        return 0
-    except:
-        log.error(f'  *** Error during fdt transfer to {remote_server}')
+    log_file = f'/tmp/fdt_{int(time.time())}.log'
+    cmd = ['java', '-jar', '/APSshare/bin/fdt.jar',
+           '-c', remote_server, '-d', remote_dir, local_fname]
+    log.info(f'      *** starting fdt transfer to {remote_server} (log: {log_file})')
+
+    def _run():
+        _REPORT = ('Net Out:', 'Net In:', 'TotalBytes:', 'Transfer period:',
+                   'Exit Status:', 'SEVERE', 'WARNING', 'finished with error')
+        try:
+            with open(log_file, 'w') as lf, open(log_file, 'r') as lr:
+                proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+                while proc.poll() is None:
+                    line = lr.readline()
+                    if line:
+                        if any(k in line for k in _REPORT):
+                            log.info('FDT: ' + line.rstrip())
+                    else:
+                        time.sleep(0.2)
+                # drain remaining output
+                for line in lr:
+                    if any(k in line for k in _REPORT):
+                        log.info('FDT: ' + line.rstrip())
+            rc = proc.returncode
+            if rc == 0:
+                log.info(f'      *** fdt transfer to {remote_server}: Done!')
+            else:
+                log.error(f'      *** fdt transfer to {remote_server}: FAILED (rc={rc})')
+        except Exception as e:
+            log.error(f'      *** fdt transfer thread error: {e}')
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return 0
     
 
