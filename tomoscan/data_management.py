@@ -143,8 +143,7 @@ def start_fdt_transfer(remote_server, remote_dir, local_fname):
 
     remote_server = remote_server.split('@')[-1]
     log_file = f'/tmp/fdt_{int(time.time())}.log'
-    cmd = ['java', '-jar', '/APSshare/bin/fdt.jar',
-           '-c', remote_server, '-d', remote_dir, local_fname]
+    cmd = f'java -jar /APSshare/bin/fdt.jar -c {remote_server} -d {remote_dir} {local_fname}'
     log.info(f'      *** starting fdt transfer to {remote_server} (log: {log_file})')
 
     def _run():
@@ -152,7 +151,7 @@ def start_fdt_transfer(remote_server, remote_dir, local_fname):
                    'Exit Status:', 'SEVERE', 'WARNING', 'finished with error')
         try:
             with open(log_file, 'w') as lf, open(log_file, 'r') as lr:
-                proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+                proc = subprocess.Popen(cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT)
                 while proc.poll() is None:
                     line = lr.readline()
                     if line:
