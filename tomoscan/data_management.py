@@ -113,20 +113,18 @@ def fdt_scp(local_fname, remote_analysis_dir, local_top_dir):
 
 
 def check_remote_directory(remote_server, remote_dir):
-    try:
-        rcmd = 'ls ' + remote_dir
-        # rcmd is the command used to check if the remote directory exists
-        result = subprocess.run(['ssh', remote_server, rcmd], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, env=_ssh_env())
-        if result.returncode == 0:
-            log.warning('      *** remote directory %s exists' % (remote_dir))
-            return 0
-        elif result.returncode == 2:
-            log.warning('      *** remote directory %s does not exist' % (remote_dir))
-            return 2
-        else:
-            ssh_err = result.stderr.decode(errors='replace').strip()
-            log.error('  *** SSH error checking remote directory (code %d): %s' % (result.returncode, ssh_err))
-            return -1
+    rcmd = 'ls ' + remote_dir
+    result = subprocess.run(['ssh', remote_server, rcmd], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, env=_ssh_env())
+    if result.returncode == 0:
+        log.warning('      *** remote directory %s exists' % (remote_dir))
+        return 0
+    elif result.returncode == 2:
+        log.warning('      *** remote directory %s does not exist' % (remote_dir))
+        return 2
+    else:
+        ssh_err = result.stderr.decode(errors='replace').strip()
+        log.error('  *** SSH error checking remote directory (code %d): %s' % (result.returncode, ssh_err))
+        return -1
 
 def create_remote_directory(remote_server, remote_dir):
     cmd = 'mkdir -p ' + remote_dir
@@ -142,7 +140,7 @@ def create_remote_directory(remote_server, remote_dir):
 
 
 def start_remote_fdt(remote_server):
-    cmd_start_server = "bash -c 'java -jar /APSshare/bin/fdt.jar -S >/tmp/fdt_server.log 2>&1'"
+    cmd_start_server = "bash -c 'java -jar /APSshare/bin/fdt.jar -S >/dev/null 2>&1'"
     cmd_kill_server = 'lsof -t -i:54321 | xargs -r kill -9'
     try:
         log.info('kill everything working with port 54321 on the server')
