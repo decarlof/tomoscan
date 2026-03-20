@@ -92,7 +92,13 @@ def fdt_scp(local_fname, remote_analysis_dir, local_top_dir):
         if iret != 0:
             log.error('  *** Error making a remote directory.  Exiting')
             return -1
-    start_remote_fdt(remote_server)
+    elif ret != 0:
+        log.error('  *** Cannot verify remote directory (SSH error). Exiting')
+        return -1
+    iret = start_remote_fdt(remote_server)
+    if iret != 0:
+        log.error('  *** Error starting remote FDT server. Exiting')
+        return -1
     start_fdt_transfer(remote_server, str(remote_dir), str(local_fname))
     log.info('  *** Data transfer: Done!')
     return 0
@@ -102,23 +108,23 @@ def check_remote_directory(remote_server, remote_dir):
     try:
         rcmd = 'ls ' + remote_dir
         # rcmd is the command used to check if the remote directory exists
-        subprocess.check_call(['ssh', '-t', remote_server, rcmd], stderr=open(os.devnull, 'wb'), stdout=open(os.devnull, 'wb'))
+        subprocess.check_call(['ssh', remote_server, rcmd], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         log.warning('      *** remote directory %s exists' % (remote_dir))
         return 0
 
-    except subprocess.CalledProcessError as e: 
-        log.warning('      *** remote directory %s does not exist' % (remote_dir))
+    except subprocess.CalledProcessError as e:
         if e.returncode == 2:
+            log.warning('      *** remote directory %s does not exist' % (remote_dir))
             return e.returncode
         else:
-            log.error('  *** Unknown error code returned: %d' % (e.returncode))
+            log.error('  *** SSH error checking remote directory (code %d)' % (e.returncode))
             return -1
 
 def create_remote_directory(remote_server, remote_dir):
     cmd = 'mkdir -p ' + remote_dir
     try:
         log.info('      *** creating remote directory %s' % (remote_dir))
-        subprocess.check_call(['ssh', '-t', remote_server, cmd])
+        subprocess.check_call(['ssh', remote_server, cmd], stdin=subprocess.DEVNULL)
         log.info('      *** creating remote directory %s: Done!' % (remote_dir))
         return 0
 
@@ -133,13 +139,14 @@ def start_remote_fdt(remote_server):
     try:
         log.info('kill everything working with port 54321 on the server')
         log.info(f'ssh -f {remote_server} {cmd_kill_server}')
-        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server])
+        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server], stdin=subprocess.DEVNULL)
         time.sleep(1)
         log.info(f'      *** starting fdt server on {remote_server}')
         log.info(f'ssh -f {remote_server} {cmd_start_server}')
-        subprocess.check_call(['ssh', '-f', remote_server, cmd_start_server])
+        subprocess.check_call(['ssh', '-f', remote_server, cmd_start_server], stdin=subprocess.DEVNULL)
         log.info(f'      *** starting fdt server on {remote_server}: Done!')
-        time.sleep(5)        
+        time.sleep(5)
+        return 0
     except subprocess.CalledProcessError as e:
         log.error('  *** Error while starting remote fdt server. Error code: %d' % (e.returncode))
         return -1
