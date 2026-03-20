@@ -27,6 +27,14 @@ from pathlib import Path
 from tomoscan import log
 
 
+def _ssh_env():
+    """Return os.environ without LD_LIBRARY_PATH so conda's OpenSSL does not
+    shadow the system libcrypto that the system ssh binary was built against."""
+    env = os.environ.copy()
+    env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
 def scp(fname_origin, remote_analysis_dir, local_top_dir=None):
 
     log.info(' ')
@@ -108,23 +116,23 @@ def check_remote_directory(remote_server, remote_dir):
     try:
         rcmd = 'ls ' + remote_dir
         # rcmd is the command used to check if the remote directory exists
-        subprocess.check_call(['ssh', remote_server, rcmd], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        log.warning('      *** remote directory %s exists' % (remote_dir))
-        return 0
-
-    except subprocess.CalledProcessError as e:
-        if e.returncode == 2:
+        result = subprocess.run(['ssh', remote_server, rcmd], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, env=_ssh_env())
+        if result.returncode == 0:
+            log.warning('      *** remote directory %s exists' % (remote_dir))
+            return 0
+        elif result.returncode == 2:
             log.warning('      *** remote directory %s does not exist' % (remote_dir))
-            return e.returncode
+            return 2
         else:
-            log.error('  *** SSH error checking remote directory (code %d)' % (e.returncode))
+            ssh_err = result.stderr.decode(errors='replace').strip()
+            log.error('  *** SSH error checking remote directory (code %d): %s' % (result.returncode, ssh_err))
             return -1
 
 def create_remote_directory(remote_server, remote_dir):
     cmd = 'mkdir -p ' + remote_dir
     try:
         log.info('      *** creating remote directory %s' % (remote_dir))
-        subprocess.check_call(['ssh', remote_server, cmd], stdin=subprocess.DEVNULL)
+        subprocess.check_call(['ssh', remote_server, cmd], stdin=subprocess.DEVNULL, env=_ssh_env())
         log.info('      *** creating remote directory %s: Done!' % (remote_dir))
         return 0
 
@@ -139,11 +147,11 @@ def start_remote_fdt(remote_server):
     try:
         log.info('kill everything working with port 54321 on the server')
         log.info(f'ssh -f {remote_server} {cmd_kill_server}')
-        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server], stdin=subprocess.DEVNULL)
+        subprocess.check_call(['ssh', '-f', remote_server, cmd_kill_server], stdin=subprocess.DEVNULL, env=_ssh_env())
         time.sleep(1)
         log.info(f'      *** starting fdt server on {remote_server}')
         log.info(f'ssh -f {remote_server} {cmd_start_server}')
-        subprocess.check_call(['ssh', '-f', remote_server, cmd_start_server], stdin=subprocess.DEVNULL)
+        subprocess.check_call(['ssh', '-f', remote_server, cmd_start_server], stdin=subprocess.DEVNULL, env=_ssh_env())
         log.info(f'      *** starting fdt server on {remote_server}: Done!')
         time.sleep(5)
         return 0
