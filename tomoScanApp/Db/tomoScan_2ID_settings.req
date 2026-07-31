@@ -3,25 +3,12 @@
 
 # This is the file for the tomoscan_2bm derived class.
 
-####################
-# Energy information
-####################
-$(P)$(R)Energy
-$(P)$(R)EnergyMode
-$(P)$(R)Filters
-
 #########################
 # Beam status information
 #########################
 $(P)$(R)BeamReadyPVName
 $(P)$(R)BeamReadyValue
 $(P)$(R)Testing
-
-#######################################
-# Sample top X and Y translation motors
-#######################################
-$(P)$(R)SampleTopXPVName
-$(P)$(R)SampleTopZPVName
 
 ####################
 # Sample information
@@ -52,48 +39,34 @@ $(P)$(R)ExperimentYearMonth
 $(P)$(R)RemoteAnalysisDir
 $(P)$(R)CopyToAnalysisDir
 
-######################
-# Fast shutter control
-######################
-$(P)$(R)CloseFastShutterPVName
-$(P)$(R)CloseFastShutterValue
-$(P)$(R)OpenFastShutterPVName
-$(P)$(R)OpenFastShutterValue
-
 ################
 # Shutter status
 ################
 $(P)$(R)ShutterStatusPVName
 
-#################
-# Interlaced scan
-#################
-$(P)$(R)InterlacedScan
-$(P)$(R)InterlacedFileName
-$(P)$(R)StabilizationTime
+################
+# AD plugins
+################
+$(P)$(R)PvaPluginPVPrefix
 
-###################
-# Energy change
-###################
+######################
+# Pva Plugin PV Prefix
+######################
+$(P)$(R)PvaPluginPVPrefix
+
+######################
+# Roi Plugin PV Prefix
+######################
+$(P)$(R)RoiPluginPVPrefix
+
+#####################
+# Cb Plugin PV Prefix
+#####################
+$(P)$(R)CbPluginPVPrefix
+
+####################
+# Energy information
+####################
 $(P)$(R)Energy
-$(P)$(R)EnergySet
-
-#########
-# MicroCT
-#########
-$(P)$(R)CollectMicroCTdata
-
-###########
-# TXMOptics
-###########
-$(P)$(R)TxmOpticsPVPrefix
-
-#################
-# Image PV Prefix
-#################
-$(P)$(R)ImagePVPrefix
-
-#################
-# Pause
-#################
-$(P)$(R)Pause
+$(P)$(R)EnergyMode
+$(P)$(R)Filters
