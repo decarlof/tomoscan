@@ -24,6 +24,7 @@ import http.client as httplib
 import base64
 import string
 import threading
+from datetime import datetime, timezone
 
 from epics import PV
 from pathlib import Path
@@ -469,6 +470,7 @@ class TomoScan2BM(TomoScanHelical):
         - Turns on data capture.
         """
         log.info('begin scan')
+        self.scan_start_iso = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
         # Set data directory
         file_path = Path(self.epics_pvs['DetectorTopDir'].get(as_string=True))
@@ -527,6 +529,11 @@ class TomoScan2BM(TomoScanHelical):
         self.wait_pv(self.epics_pvs['FPCaptureRBV'], 0)
         # Add theta in the hdf file
         self.add_theta()
+        # Overwrite start_date with the real scan-start time captured in begin_scan.
+        # The XML-based DateTimeStart NDAttribute (with when="OnFileOpen") is stale
+        # between scans (it snapshots onto NDArrays as they flow through, and no new
+        # NDArrays flow between scans), so we write start_date from Python instead.
+        self.add_start_date()
 
         log.info('Adding a frame from the IP camera')
 
@@ -584,6 +591,28 @@ class TomoScan2BM(TomoScanHelical):
             self.epics_pvs['CamAcquireTime'].put(exposure_time, wait=True, timeout = 10.0)
         else:
             super().set_scan_exposure_time(exposure_time)
+
+    def add_start_date(self):
+        """Write the real scan-start time to /process/acquisition/start_date.
+
+        Captured in begin_scan() as self.scan_start_iso; written here after the
+        AD HDF5 plugin closes the file. Replaces the removed DateTimeStart XML
+        NDAttribute, whose OnFileOpen value came from the last NDArray to pass
+        through the plugin and was therefore stale (typically the last frame of
+        the previous scan) rather than the true scan-start time.
+        """
+        full_file_name = self.epics_pvs['FPFullFileName'].get(as_string=True)
+        if not os.path.exists(full_file_name):
+            return
+        try:
+            with h5py.File(full_file_name, "a") as f:
+                grp = f.require_group("/process/acquisition")
+                if "start_date" in grp:
+                    grp["start_date"][0] = self.scan_start_iso.encode()
+                else:
+                    grp.create_dataset("start_date", data=[self.scan_start_iso.encode()])
+        except Exception as e:
+            log.warning("Could not add start_date to %s: %s", full_file_name, e)
 
     def add_theta(self):
         """Add theta at the end of a scan.
