@@ -66,3 +66,8 @@ $(P)$(R)CopyToAnalysisDir
 # Camera External Trigger
 #########################
 $(P)$(R)ExternalTriggerSource
+
+############
+# Scan UUID
+############
+$(P)$(R)ScanUUID

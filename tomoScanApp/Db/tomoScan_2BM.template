@@ -268,3 +268,13 @@ record(stringout, "$(P)$(R)CbPluginPVPrefix")
    field(VAL,  "$(CB_PLUGIN)")
    field(PINI, "YES")
 }
+
+############
+# Scan UUID
+############
+
+record(stringout, "$(P)$(R)ScanUUID")
+{
+   field(VAL,  "Unknown")
+   field(PINI, "YES")
+}

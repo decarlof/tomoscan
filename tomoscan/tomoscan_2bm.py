@@ -7,13 +7,14 @@
 """
 import time
 import os
-import h5py 
+import h5py
 import sys
 import traceback
 import numpy as np
 import cv2
 import json
 import pathlib
+import uuid
 
 import sys,os
 import time
@@ -482,6 +483,10 @@ class TomoScan2BM(TomoScanHelical):
         
         # Call the base class method
         super().begin_scan()
+
+        # Create a new UUID for this scan
+        self.epics_pvs['ScanUUID'].put(str(uuid.uuid4()), wait=True)
+
         # Opens the front-end shutter
         self.open_frontend_shutter()
 

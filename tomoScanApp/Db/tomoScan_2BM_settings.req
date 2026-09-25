@@ -77,3 +77,8 @@ $(P)$(R)RoiPluginPVPrefix
 # Cb Plugin PV Prefix
 #####################
 $(P)$(R)CbPluginPVPrefix
+
+############
+# Scan UUID
+############
+$(P)$(R)ScanUUID

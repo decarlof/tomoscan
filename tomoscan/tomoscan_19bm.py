@@ -6,6 +6,7 @@
      Derived class for tomography scanning with EPICS at APS beamline 19-BM
 """
 import time
+import uuid
 
 from epics import PV
 from pathlib import Path
@@ -351,6 +352,9 @@ class TomoScan19BM(TomoScanPSO):
 
         # Call the base class method
         super().begin_scan()
+
+        # Create a new UUID for this scan
+        self.epics_pvs['ScanUUID'].put(str(uuid.uuid4()), wait=True)
 
         # Refuse to start a scan the rotation stage cannot actually perform
         self.check_rotation_ready()
