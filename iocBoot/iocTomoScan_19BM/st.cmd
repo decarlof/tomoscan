@@ -13,8 +13,7 @@ tomoScanApp_registerRecordDeviceDriver pdbbase
 # 19-BM inherits the rotary stage and its Aerotech Ensemble controller from
 # 7-BM, where the controller answered on 164.54.107.56:8001.  The hardware is
 # unchanged; only the address changes when it is re-racked here.
-# TODO: replace with the 19-BM address once the controller is on the network.
-drvAsynIPPortConfigure("PSO_PORT", "0.0.0.0:8001", 0, 0, 0)
+drvAsynIPPortConfigure("PSO_PORT", "10.54.129.38:8001", 0, 0, 0)
 asynOctetSetInputEos(PSO_PORT, 0, "\n")
 asynOctetSetOutputEos(PSO_PORT, 0, "\n")
 asynSetTraceIOMask(PSO_PORT, 0, ESCAPE)
