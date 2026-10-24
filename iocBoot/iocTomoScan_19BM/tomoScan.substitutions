@@ -41,11 +41,11 @@ pattern
 # properties of that hardware rather than of where it is plugged in, so they
 # carry over unchanged from iocTomoScan_7BM/tomoScan.substitutions.
 #
-# The one thing to re-verify after the stage is remounted is the SIGN of
-# PSO_ENC_PER_ROTATION.  It is negative here because at 7-BM the encoder counts
-# decrease as the dial position increases.  Remounting can reverse that.  Check
-# it the way 32-ID-C documents: compare the signs of the rotation motor's .RVAL
-# and .DRBV, which must agree for a positive value.
+# PSO_ENC_PER_ROTATION is positive at 19-BM: after remounting, the encoder
+# counts increase as the dial position increases (confirmed 2026-10-23, opposite
+# of the 7-BM wiring this stage came from).  If the stage is ever remounted
+# again, re-verify the SIGN the way 32-ID-C documents: compare the signs of
+# the rotation motor's .RVAL and .DRBV, which must agree for a positive value.
 file "$(TOP)/db/tomoScan_PSO.template"
 {
 pattern
