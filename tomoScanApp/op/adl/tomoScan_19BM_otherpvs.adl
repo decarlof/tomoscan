@@ -1,14 +1,14 @@
 
 file {
-	name="/home/beams/2BMB/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScan_19BM_otherpvs.adl"
+	name="/home/beams0/FACTUSER/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScan_19BM_otherpvs.adl"
 	version=030111
 }
 display {
 	object {
-		x=1933
-		y=228
+		x=1923
+		y=220
 		width=640
-		height=315
+		height=210
 	}
 	clr=14
 	bclr=4
@@ -172,123 +172,7 @@ text {
 text {
 	object {
 		x=19
-		y=145
-		width=230
-		height=20
-	}
-	"basic attribute" {
-		clr=14
-	}
-	textix="Open fast shutter value"
-	align="horiz. right"
-}
-"text entry" {
-	object {
-		x=254
-		y=145
-		width=380
-		height=20
-	}
-	control {
-		chan="$(P)$(R)OpenFastShutterValue"
-		clr=14
-		bclr=51
-	}
-	format="string"
-	limits {
-	}
-}
-text {
-	object {
-		x=49
 		y=120
-		width=200
-		height=20
-	}
-	"basic attribute" {
-		clr=14
-	}
-	textix="Open fast shutter PV"
-	align="horiz. right"
-}
-"text entry" {
-	object {
-		x=254
-		y=120
-		width=380
-		height=20
-	}
-	control {
-		chan="$(P)$(R)OpenFastShutterPVName"
-		clr=14
-		bclr=51
-	}
-	format="string"
-	limits {
-	}
-}
-text {
-	object {
-		x=39
-		y=170
-		width=210
-		height=20
-	}
-	"basic attribute" {
-		clr=14
-	}
-	textix="Close fast shutter PV"
-	align="horiz. right"
-}
-text {
-	object {
-		x=9
-		y=195
-		width=240
-		height=20
-	}
-	"basic attribute" {
-		clr=14
-	}
-	textix="Close fast shutter value"
-	align="horiz. right"
-}
-"text entry" {
-	object {
-		x=254
-		y=195
-		width=380
-		height=20
-	}
-	control {
-		chan="$(P)$(R)CloseFastShutterValue"
-		clr=14
-		bclr=51
-	}
-	format="string"
-	limits {
-	}
-}
-"text entry" {
-	object {
-		x=254
-		y=170
-		width=380
-		height=20
-	}
-	control {
-		chan="$(P)$(R)CloseFastShutterPVName"
-		clr=14
-		bclr=51
-	}
-	format="string"
-	limits {
-	}
-}
-text {
-	object {
-		x=19
-		y=220
 		width=230
 		height=20
 	}
@@ -301,7 +185,7 @@ text {
 "text entry" {
 	object {
 		x=254
-		y=220
+		y=120
 		width=380
 		height=20
 	}
@@ -346,7 +230,7 @@ text {
 text {
 	object {
 		x=159
-		y=280
+		y=179
 		width=90
 		height=20
 	}
@@ -359,7 +243,7 @@ text {
 "related display" {
 	object {
 		x=254
-		y=280
+		y=179
 		width=100
 		height=20
 	}
@@ -375,7 +259,7 @@ text {
 text {
 	object {
 		x=19
-		y=245
+		y=145
 		width=230
 		height=20
 	}
@@ -388,7 +272,7 @@ text {
 "text entry" {
 	object {
 		x=254
-		y=245
+		y=145
 		width=380
 		height=20
 	}

@@ -1,7 +1,7 @@
 
 file {
-	name="/home/beams/FACTUSER/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScan_19BM.adl"
-	version=030109
+	name="/home/beams0/FACTUSER/epics/synApps/support/tomoscan/tomoScanApp/op/adl/tomoScan_19BM.adl"
+	version=030111
 }
 display {
 	object {
@@ -108,7 +108,7 @@ text {
 	"basic attribute" {
 		clr=54
 	}
-	textix="7-BM Tomography   $(P)$(R)"
+	textix="19-BM Tomography   $(P)$(R)"
 	align="horiz. centered"
 }
 "related display" {
