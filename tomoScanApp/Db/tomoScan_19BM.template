@@ -129,14 +129,6 @@ record(ao, "$(P)$(R)CameraTubeLength")
    field(PINI, "YES")
 }
 
-record(ao, "$(P)$(R)CameraDistance")
-{
-   field(PREC, "0")
-   field(EGU,  "mm")
-   field(VAL,  "0")
-   field(PINI, "YES")
-}
-
 ####################
 # Sample information
 ####################

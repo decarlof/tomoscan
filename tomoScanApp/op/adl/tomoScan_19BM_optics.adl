@@ -285,17 +285,17 @@ text {
 	limits {
 	}
 }
-"text entry" {
+"text update" {
 	object {
 		x=325
 		y=196
 		width=230
 		height=20
 	}
-	control {
-		chan="$(P)$(R)CameraDistance"
-		clr=14
-		bclr=51
+	monitor {
+		chan="19bmSoft:aero:m2.RBV"
+		clr=54
+		bclr=4
 	}
 	format="string"
 	limits {
