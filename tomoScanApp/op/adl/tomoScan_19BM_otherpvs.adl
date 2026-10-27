@@ -5,10 +5,10 @@ file {
 }
 display {
 	object {
-		x=1923
-		y=220
+		x=1913
+		y=212
 		width=640
-		height=210
+		height=240
 	}
 	clr=14
 	bclr=4
@@ -230,7 +230,7 @@ text {
 text {
 	object {
 		x=159
-		y=179
+		y=213
 		width=90
 		height=20
 	}
@@ -243,7 +243,7 @@ text {
 "related display" {
 	object {
 		x=254
-		y=179
+		y=213
 		width=100
 		height=20
 	}
@@ -278,6 +278,35 @@ text {
 	}
 	control {
 		chan="$(P)$(R)ScanUUID"
+		clr=14
+		bclr=51
+	}
+	format="string"
+	limits {
+	}
+}
+text {
+	object {
+		x=19
+		y=170
+		width=230
+		height=20
+	}
+	"basic attribute" {
+		clr=14
+	}
+	textix="Minimum Frame Time (s)"
+	align="horiz. right"
+}
+"text entry" {
+	object {
+		x=254
+		y=170
+		width=380
+		height=20
+	}
+	control {
+		chan="$(P)$(R)MinFrameTime"
 		clr=14
 		bclr=51
 	}

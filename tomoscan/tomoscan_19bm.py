@@ -11,7 +11,7 @@ import uuid
 from epics import PV
 from pathlib import Path
 
-from tomoscan.tomoscan import ScanAbortError
+from tomoscan.tomoscan import ScanAbortError, CameraTimeoutError
 from tomoscan.tomoscan_pso import TomoScanPSO
 from tomoscan import log
 
@@ -25,13 +25,20 @@ EPSILON = .001
 # ADKinetix at 32-ID-C, the only GenICam timing features on this camera are
 # GC_AcqFrameRate and GC_AcqLineRate -- so this constant is the only source.
 #
-# TODO: this value has NOT been measured.  It is a deliberately conservative
-# placeholder: too long only makes a scan slower, too short drops frames.
-# Measure it the way the tables in TomoScan.compute_frame_time() were built --
-# minimum exposure, a few thousand frames, the fastest trigger rate that drops
-# nothing -- and reduce it.  As a cross-check, 6380 rows divided by
-# GC_AcqLineRate_RBV should land near the true value.
-VIEWORKS_READOUT_TIME = 0.060
+# Set from the camera's own figures, 2026-10-26, replacing an unmeasured 0.060
+# placeholder.  The cross-check the previous note suggested agrees: 6380 rows /
+# GC_AcqLineRate_RBV (115385) = 55.3 ms, and 1 / GC_AcqFrameRate_RBV (16.6667)
+# = 60.0 ms, so the true readout sits between the two.
+#
+# Note compute_frame_time() below adds 1 ms, giving a 59.9 ms frame time, or
+# 16.69 fps -- marginally above the 16.6667 fps the camera reports as its
+# maximum at full frame.  If frames start dropping, this is the first place to
+# look: raise it rather than chase the trigger.
+#
+# Readout is NOT overlapped with exposure on this sensor, unlike the Oryx, so
+# this time is paid on every frame rather than hidden under the next exposure.
+# TriggerOverlap reads N.A. -- the VP-61MX does not implement the feature.
+VIEWORKS_READOUT_TIME = 0.0589
 VIEWORKS_READOUT_MARGIN = 1.05
 
 # Model string reported by 19bmVieworks:cam1:Model_RBV.
@@ -98,12 +105,17 @@ class TomoScan19BM(TomoScanPSO):
 
         # Rotation motor fields the base class does not define.  Needed by
         # check_rotation_ready(); see the comments there.
+        #
+        # These go into control_pvs rather than epics_pvs because the
+        # `self.epics_pvs = {**config_pvs, **control_pvs}` rebuild further down
+        # replaces the dict, which would otherwise wipe these additions and
+        # make check_rotation_ready() KeyError on 'RotationDHLM'.
         rotation_pv_name = self.control_pvs['Rotation'].pvname
-        self.epics_pvs['RotationDHLM'] = PV(rotation_pv_name + '.DHLM')
-        self.epics_pvs['RotationDLLM'] = PV(rotation_pv_name + '.DLLM')
-        self.epics_pvs['RotationHLM']  = PV(rotation_pv_name + '.HLM')
-        self.epics_pvs['RotationLLM']  = PV(rotation_pv_name + '.LLM')
-        self.epics_pvs['RotationLVIO'] = PV(rotation_pv_name + '.LVIO')
+        self.control_pvs['RotationDHLM'] = PV(rotation_pv_name + '.DHLM')
+        self.control_pvs['RotationDLLM'] = PV(rotation_pv_name + '.DLLM')
+        self.control_pvs['RotationHLM']  = PV(rotation_pv_name + '.HLM')
+        self.control_pvs['RotationLLM']  = PV(rotation_pv_name + '.LLM')
+        self.control_pvs['RotationLVIO'] = PV(rotation_pv_name + '.LVIO')
 
         # Read by flush_file_plugin().  Only 32-ID-C's wait_camera_done()
         # override ever sets it True, and that override is not carried over, so
@@ -143,11 +155,18 @@ class TomoScan19BM(TomoScanPSO):
         # Without the attributes file there is no HDF5FrameLocation, and
         # without that the layout cannot route frames into data / data_dark /
         # data_white -- everything lands in one dataset.
-        self.epics_pvs['CamNDAttributesFile'].put('TomoScanDetectorAttributes.xml')
-        self.epics_pvs['FPXMLFileName'].put('TomoScanLayout.xml')
+        # Order matters: the camera driver parses NDAttributesFile at the
+        # moment it is written, substituting whatever macros are set at that
+        # moment.  Setting Macros AFTER the file leaves $(TC)/$(DET) unresolved
+        # for the lifetime of the parsed attributes, so every HDF5FrameLocation
+        # read returns no value and the file plugin aborts with
+        # "could not retrieve destination from specified attribute".  Set the
+        # macros first, then the file, so the first parse sees the right ones.
         macro = ('DET=' + self.pv_prefixes['Camera'] + ',' + 'TC='
                  + self.epics_pvs['Testing'].__dict__['pvname'].replace('Testing', '', 1))
-        self.control_pvs['CamNDAttributesMacros'].put(macro)
+        self.control_pvs['CamNDAttributesMacros'].put(macro, wait=True)
+        self.epics_pvs['CamNDAttributesFile'].put('TomoScanDetectorAttributes.xml', wait=True)
+        self.epics_pvs['FPXMLFileName'].put('TomoScanLayout.xml', wait=True)
 
         log.setup_custom_logger("./tomoscan.log")
 
@@ -241,6 +260,34 @@ class TomoScan19BM(TomoScanPSO):
                 log.error('shutter did not open within %s s', timeout)
                 raise ScanAbortError
 
+    def wait_pv(self, epics_pv, wait_val, timeout=float('inf'), delta_t=0.01):
+        """Poll ``epics_pv`` until it equals ``wait_val`` or ``timeout`` elapses.
+
+        Modeled on the 7-BM implementation.  Lives here rather than in the base
+        class because other beamline subclasses carry their own copies
+        (tomoscan_7bm.wait_pv, tomoscan_32idc.wait_pv) and the base class never
+        grew one -- so the first call from set_trigger_mode_vieworks() or
+        close_shutter() would AttributeError without this method.
+
+        Floating-point comparisons use ``EPSILON`` to tolerate CA-side rounding;
+        everything else uses ``==``.  Returns True on match, False on timeout.
+        """
+        log.info('wait_pv')
+        time.sleep(delta_t)
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            pv_val = epics_pv.get()
+            if isinstance(pv_val, float):
+                if abs(pv_val - wait_val) < EPSILON:
+                    return True
+            if pv_val == wait_val:
+                return True
+            time.sleep(delta_t)
+        log.error('  *** ERROR: PV TIMEOUT ***')
+        log.error('  *** wait_pv(%s, %s, %5.2f reached max timeout. Return False',
+                  epics_pv.pvname, wait_val, timeout)
+        return False
+
     def set_trigger_mode(self, trigger_mode, num_images):
         """Sets the trigger mode of the camera.
 
@@ -323,8 +370,28 @@ class TomoScan19BM(TomoScanPSO):
 
         exposure = self.epics_pvs['CamAcquireTimeRBV'].value
         frame_time = exposure * VIEWORKS_READOUT_MARGIN
-        if frame_time < VIEWORKS_READOUT_TIME:
-            frame_time = VIEWORKS_READOUT_TIME + .001
+
+        # MinFrameTime is the floor, set at runtime rather than compiled in,
+        # because readout scales with the number of rows and a vertical ROI
+        # crop can take it below the full-frame value.  Same record name as
+        # 7-BM.  It registers itself: read_pv_file() turns every line of
+        # tomoScan_19BM_settings.req into an epics_pvs entry keyed by the
+        # record name, so no explicit PV creation is needed here.
+        #
+        # Falls back to the compiled default if the record is missing or
+        # unset, so an un-rebuilt IOC still gets a sane floor rather than
+        # triggering as fast as the exposure allows.
+        min_frame_time = 0
+        pv = self.epics_pvs.get('MinFrameTime')
+        if pv is not None:
+            value = pv.get()
+            if value:
+                min_frame_time = value
+        if not min_frame_time:
+            min_frame_time = VIEWORKS_READOUT_TIME
+
+        if frame_time < min_frame_time:
+            frame_time = min_frame_time + .001
         self.readout_margin = VIEWORKS_READOUT_MARGIN
         return frame_time
 
@@ -461,6 +528,60 @@ class TomoScan19BM(TomoScanPSO):
                           else '%.4f' % span,
                           self.control_pvs['Rotation'].pvname)
                 raise ScanAbortError
+
+    def wait_camera_done(self, timeout):
+        """Waits for camera acquisition to complete, guarding against the arm race.
+
+        The base class returns as soon as ``CamAcquireBusy`` reads 0.  The
+        Vieworks VP-61MX through ADEuresys does not raise AcquireBusy until a
+        measurable moment after ``CamAcquire`` is written, and that moment can
+        exceed the 500 ms sleep ``collect_static_frames()`` /
+        ``collect_projections()`` allow before entering wait_camera_done.  The
+        base loop then exits on its very first iteration -- ``ImagesCollected``
+        never advances from the previous phase's value and ``end_scan()`` runs
+        with the camera still arming, so the HDF file is closed before frames
+        arrive and the rotation stage keeps moving on its own.
+
+        Guard the base behaviour with a short wait for AcquireBusy to actually
+        become 1.  Only then is a 0 reading evidence of completion; before that
+        it is evidence the arm has not landed yet.
+
+        A short Internal acquisition (10 darks at 100 ms exposure takes ~1 s,
+        less than the sleep+entry overhead) can legitimately finish before
+        wait_camera_done is called at all: AcquireBusy went 0->1->0 unseen.
+        Waiting the full timeout and raising on that would abort a scan that
+        was in fact successful.  Distinguish the two cases at timeout by
+        checking ``NumImagesCounter``: if it equals ``NumImages`` the camera
+        is done and we return normally; if it is short, the arm never landed
+        and raising CameraTimeoutError is the correct abort.
+
+        Projections (``TriggerMode == On``) get the longer 10 s window because
+        the Vieworks has been seen to take noticeably longer to arm into
+        external-trigger mode than internal.  Dark/flat (Internal) get 3 s,
+        which is still ~6x the sleep in collect_static_frames.
+        """
+        arm_timeout = 10.0 if self.epics_pvs['CamTriggerMode'].get(
+            as_string=True) == 'On' else 3.0
+        arm_start = time.time()
+        while self.epics_pvs['CamAcquireBusy'].value == 0:
+            if not self.scan_is_running:
+                raise ScanAbortError
+            if time.time() - arm_start > arm_timeout:
+                num_images   = self.epics_pvs['CamNumImages'].value
+                num_captured = self.epics_pvs['CamNumImagesCounter'].value
+                if (num_images is not None and num_captured is not None
+                        and num_captured >= num_images):
+                    log.info('camera finished before wait_camera_done arm '
+                             'window began (NumImagesCounter=%s/%s)',
+                             num_captured, num_images)
+                    return
+                log.error('camera did not arm (AcquireBusy stayed 0) '
+                          'within %.1f s of Acquire=1 '
+                          '(NumImagesCounter=%s/%s)',
+                          arm_timeout, num_captured, num_images)
+                raise CameraTimeoutError()
+            time.sleep(0.05)
+        super().wait_camera_done(timeout)
 
     def queue_pv(self, name):
         """Returns the file plugin queue PV ``name``, creating it if necessary.

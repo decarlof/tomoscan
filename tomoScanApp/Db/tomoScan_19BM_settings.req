@@ -70,3 +70,8 @@ $(P)$(R)ExternalTriggerSource
 # Scan UUID
 ############
 $(P)$(R)ScanUUID
+
+####################
+# Minimum Frame Time
+####################
+$(P)$(R)MinFrameTime

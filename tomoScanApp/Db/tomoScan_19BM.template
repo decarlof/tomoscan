@@ -272,3 +272,25 @@ record(stringout, "$(P)$(R)ScanUUID")
    field(VAL,  "Unknown")
    field(PINI, "YES")
 }
+
+####################
+# Minimum Frame Time
+####################
+
+# Floor on the time between camera triggers, in seconds.  Same record name as
+# 7-BM so the two stations match, but it carries a default here because the
+# role differs: 7-BM raises a value the base class computes from its model
+# table, while that table has no VP-61MX entry, so at 19-BM this IS the
+# readout time rather than an override of one.
+#
+# Default 0.0589 s is the Vieworks VP-61MX at full frame.  Readout scales with
+# the number of rows, so a vertical ROI crop can take it lower; that is what
+# makes it worth having at runtime.  Too high only slows the scan, too low
+# drops frames.
+record(ao, "$(P)$(R)MinFrameTime")
+{
+   field(PREC, "4")
+   field(EGU,  "s")
+   field(VAL,  "0.0589")
+   field(PINI, "YES")
+}
