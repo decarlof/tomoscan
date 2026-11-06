@@ -5,8 +5,13 @@
    TomoScan19BM
      Derived class for tomography scanning with EPICS at APS beamline 19-BM
 """
+import os
+import sys
 import time
+import traceback
 import uuid
+
+import h5py
 
 from epics import PV
 from pathlib import Path
@@ -789,3 +794,97 @@ class TomoScan19BM(TomoScanPSO):
             else:
                 log.warning('file plugin wrote %s of %s frames, %s frames were '
                             'not saved', num_captured, num_capture, short)
+
+    def end_scan(self):
+        """Drain the file plugin, write ``/exchange/theta`` and finish the scan.
+
+        ``TomoScanPSO.end_scan()`` does not write theta -- it is the derived
+        class's job -- and without it the HDF5 file produced here is missing
+        ``/exchange/theta``, which downstream reconstruction needs.  Port the
+        7-BM pattern: flush the file plugin so no frames are still in the
+        queue, close the file, create the theta dataset, then let the base
+        class run.
+        """
+        log.info('end scan')
+
+        # Make sure the plugin has written every frame it was handed before the
+        # file is closed, then close it.  flush_file_plugin() is defined on this
+        # class and already handles the drain -- Capture=Done here is a no-op in
+        # the normal case where the plugin closed the file itself, and a clean
+        # shutdown otherwise.
+        try:
+            self.flush_file_plugin()
+        except Exception:
+            log.exception('flush_file_plugin failed -- closing the file anyway')
+        self.epics_pvs['FPCapture'].put('Done')
+        self.wait_pv(self.epics_pvs['FPCaptureRBV'], 0)
+
+        # Write the theta dataset to the raw file
+        self.add_theta()
+
+        # Let TomoScanPSO.end_scan() save the .config, restore FreeRun, reset
+        # the rotation speed and move the sample back in.
+        super().end_scan()
+
+    def add_theta(self):
+        """Create ``/exchange/theta`` in the raw HDF5 file.
+
+        Reads the per-frame ``/defaults/NDArrayUniqueId`` and
+        ``/defaults/HDF5FrameLocation`` tables written by the NDFileHDF5
+        plugin, picks out the frames that landed under ``/exchange/data``, and
+        writes their angles.  Indexing ``self.theta`` by ``proj_ids -
+        proj_ids[0]`` keeps the correspondence correct when the plugin drops a
+        projection, which is why this is preferred over writing ``self.theta``
+        verbatim.
+        """
+        log.info('add theta')
+        time.sleep(1.0)
+
+        if self.theta is None:
+            log.warning('no theta to add')
+            return
+
+        full_file_name = self.epics_pvs['FPFullFileName'].get(as_string=True)
+        if not os.path.exists(full_file_name):
+            log.error('Failed adding theta. %s file does not exist', full_file_name)
+            return
+
+        try:
+            with h5py.File(full_file_name, 'a') as f:
+                unique_ids = f['/defaults/NDArrayUniqueId']
+                hdf_location = f['/defaults/HDF5FrameLocation']
+                total_dark_fields = self.num_dark_fields * (
+                    (self.dark_field_mode in ('Start', 'Both'))
+                    + (self.dark_field_mode in ('End', 'Both')))
+                total_flat_fields = self.num_flat_fields * (
+                    (self.flat_field_mode in ('Start', 'Both'))
+                    + (self.flat_field_mode in ('End', 'Both')))
+
+                proj_ids = unique_ids[hdf_location[:] == b'/exchange/data']
+                flat_ids = unique_ids[hdf_location[:] == b'/exchange/data_white']
+                dark_ids = unique_ids[hdf_location[:] == b'/exchange/data_dark']
+
+                if len(proj_ids) == 0 or len(self.theta) == 0:
+                    log.error('No valid theta values; aborting add_theta')
+                    return
+
+                theta_ds = f.create_dataset('/exchange/theta', (len(proj_ids),))
+                theta_ds[:] = self.theta[proj_ids - proj_ids[0]]
+                theta_ds.attrs['units'] = 'degrees'
+
+                if len(proj_ids) != len(self.theta):
+                    log.warning('There are %s missing data frames',
+                                len(self.theta) - len(proj_ids))
+                    missed_ids = [i for i in range(len(self.theta))
+                                  if i not in proj_ids - proj_ids[0]]
+                    log.warning('Missed theta: %s',
+                                list(self.theta[missed_ids]))
+                if len(flat_ids) != total_flat_fields:
+                    log.warning('There are %s missing flat field frames',
+                                total_flat_fields - len(flat_ids))
+                if len(dark_ids) != total_dark_fields:
+                    log.warning('There are %s missing dark field frames',
+                                total_dark_fields - len(dark_ids))
+        except Exception:
+            log.error('Add theta: Failed accessing: %s', full_file_name)
+            traceback.print_exc(file=sys.stdout)
