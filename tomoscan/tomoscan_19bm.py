@@ -46,6 +46,24 @@ EPSILON = .001
 VIEWORKS_READOUT_TIME = 0.0589
 VIEWORKS_READOUT_MARGIN = 1.05
 
+# Sensor line time in seconds per row, by pixel format.  Readout is
+# rows x line_time, so it scales with the vertical ROI and with the bit
+# depth.  The manual states this model itself: Table 8.3 derives its 521 us
+# maximum exposure as 1 / 17.93 fps - (6380 x 8.66 us), which is exactly
+# period = exposure + rows x line_time.  Reproducing it gives 522 us.
+#
+# The 8/10/12 bit entries share a line time because the datasheet quotes one
+# frame rate, 17.93 fps, for all three.  Multiplying each line time by the
+# 6380-row full frame reproduces the other datasheet rates as well: 14 bit
+# gives 10.1 fps against a quoted 9.99, and 16 bit 4.0 against 3.98.
+VIEWORKS_LINE_TIME = {
+    'Mono8':   8.666e-6,
+    'Mono10':  8.666e-6,
+    'Mono12':  8.666e-6,
+    'Mono14': 15.555e-6,
+    'Mono16': 39.027e-6,
+}
+
 # Model string reported by 19bmVieworks:cam1:Model_RBV.
 VIEWORKS_MODEL = 'VP-61MX-M18H0'
 
@@ -138,7 +156,42 @@ class TomoScan19BM(TomoScanPSO):
         self.control_pvs['CamFrameRateEnable']  = PV(camera_prefix + 'FrameRateEnable')
         self.control_pvs['CamPixelFormat']      = PV(camera_prefix + 'PixelFormat')
         self.control_pvs['CamUniqueIdMode']     = PV(camera_prefix + 'UniqueIdMode')
+        # SizeY, not ArraySizeY: SizeY is the ROI height in sensor rows, which
+        # is what the sensor actually clocks out, while ArraySizeY is the
+        # delivered array height after binning.  Under logic binning the
+        # sensor still reads SizeY rows, so ArraySizeY would under-estimate
+        # the readout by the bin factor.  (ArraySizeY_RBV is not created by
+        # the base class in any case -- only ArraySizeX_RBV is.)
+        self.control_pvs['CamSizeY']            = PV(camera_prefix + 'SizeY_RBV')
+        # Cross-check only, never the source of the timing.  See
+        # compute_frame_time().
+        self.control_pvs['CamLineRate']         = PV(camera_prefix + 'GC_AcqLineRate_RBV')
         self.epics_pvs = {**self.config_pvs, **self.control_pvs}
+
+        # Undo TomoScanPSO.__init__(), which sets UniqueIdMode to Camera.
+        #
+        # That is right for the other PSO beamlines, whose cameras emit a
+        # frame number: a dropped frame then leaves a gap in
+        # NDArray::uniqueId and add_theta() keeps the angles aligned with the
+        # frames.  The VP-61MX emits nothing, so on Camera every frame
+        # arrives with uniqueId = 0 and add_theta() degenerates to
+        # theta[proj_ids - proj_ids[0]] = theta[0] repeated -- a file with
+        # the right datasets and the right frame count, every angle
+        # identical, and no error raised.  Observed: big_sandstone_full2_108
+        # (2026-11-06) has 18001 projections and 18001 zeros in
+        # /exchange/theta.
+        #
+        # It has to be reverted here rather than by caput.  The base class
+        # runs on every server start, so a manual setting survives only until
+        # someone restarts the python server -- which is what silently undid
+        # it between 2026-11-02 and the sandstone scans, after autosave had
+        # faithfully persisted the wrong value.
+        #
+        # On Driver the ids are numImagesCounter, 0,1,2 per acquisition.  The
+        # counter resetting at each startCapture is harmless: darks, flats
+        # and projections are separate acquisitions and add_theta() filters
+        # by HDF5FrameLocation before subtracting proj_ids[0].
+        self.epics_pvs['CamUniqueIdMode'].put('Driver', wait=True)
 
         # Enable auto-increment on file writer
         self.epics_pvs['FPAutoIncrement'].put('Yes')
@@ -368,37 +421,102 @@ class TomoScan19BM(TomoScanPSO):
         single-beamline cameras to override here, which is what this does.
 
         Any other camera is handed back to the base class.
+
+        **The period is exposure + readout, not max() of the two.**  The base
+        class and most derived classes take the larger of the two, which is
+        right for a camera that overlaps the exposure of frame N+1 with the
+        readout of frame N.  This sensor does not: with ``TriggerMode On`` it
+        completes exposure and readout before the next frame starts (manual
+        section 8.6.2), so the exposure is added to the period rather than
+        hidden inside the readout.  Taking the maximum under-estimates as soon
+        as the exposure is comparable with the readout -- at 100 ms exposure
+        it asks for 105 ms where the camera needs about 130 ms.
+
+        **Readout is rows x line time**, so it follows the vertical ROI and
+        the pixel format rather than being a constant.  See
+        ``VIEWORKS_LINE_TIME``.
         """
         camera_model = self.epics_pvs['CamModel'].get(as_string=True)
         if camera_model != VIEWORKS_MODEL:
             return super().compute_frame_time()
 
         exposure = self.epics_pvs['CamAcquireTimeRBV'].value
-        frame_time = exposure * VIEWORKS_READOUT_MARGIN
+        readout = self.compute_readout_time()
+        frame_time = (exposure + readout) * VIEWORKS_READOUT_MARGIN
 
-        # MinFrameTime is the floor, set at runtime rather than compiled in,
-        # because readout scales with the number of rows and a vertical ROI
-        # crop can take it below the full-frame value.  Same record name as
-        # 7-BM.  It registers itself: read_pv_file() turns every line of
-        # tomoScan_19BM_settings.req into an epics_pvs entry keyed by the
-        # record name, so no explicit PV creation is needed here.
-        #
-        # Falls back to the compiled default if the record is missing or
-        # unset, so an un-rebuilt IOC still gets a sane floor rather than
-        # triggering as fast as the exposure allows.
-        min_frame_time = 0
-        pv = self.epics_pvs.get('MinFrameTime')
-        if pv is not None:
-            value = pv.get()
-            if value:
-                min_frame_time = value
-        if not min_frame_time:
-            min_frame_time = VIEWORKS_READOUT_TIME
+        # MinFrameTime is a floor on the frame time, which is what its name
+        # says.  An earlier version had it override the computed readout
+        # instead; that was a trap.  Setting it to 41.5 ms at a 15 ms exposure
+        # gave a 59.3 ms period rather than the 41.5 the operator expected, so
+        # a measurement meant to bracket the requirement bracketed nothing.
+        min_frame_time = self.epics_pvs.get('MinFrameTime')
+        min_frame_time = min_frame_time.get() if min_frame_time is not None else 0
+        if min_frame_time and frame_time < min_frame_time:
+            log.info('frame time: %.2f ms computed, raised to the '
+                     'MinFrameTime floor of %.2f ms',
+                     frame_time * 1000, min_frame_time * 1000)
+            frame_time = min_frame_time
+        else:
+            log.info('frame time: %.2f ms (%.1f ms exposure + %.1f ms readout, '
+                     'x %.2f)', frame_time * 1000, exposure * 1000,
+                     readout * 1000, VIEWORKS_READOUT_MARGIN)
 
-        if frame_time < min_frame_time:
-            frame_time = min_frame_time + .001
         self.readout_margin = VIEWORKS_READOUT_MARGIN
         return frame_time
+
+    def compute_readout_time(self):
+        """Returns the sensor readout time in seconds.
+
+        The manual escape hatch is ``MinFrameTime``, applied by the caller as
+        a floor on the whole frame time rather than here -- see
+        compute_frame_time().
+
+        Binning is deliberately not special-cased.  The manual gives a faster
+        line time for sensor binning (8.055 us, 2x2 and 3x3, 12 bit and
+        below), but nothing distinguishes sensor from logic binning at
+        runtime -- GC_BinningHorizontalMode and friends do not exist on this
+        IOC -- and guessing wrong in the fast direction drops frames.  Using
+        SizeY with the unbinned line time is exact at BinY=1 and conservative
+        under sensor binning.  ``MinFrameTime`` covers the rest.
+        """
+        pixel_format = self.epics_pvs['CamPixelFormat'].get(as_string=True)
+        line_time = VIEWORKS_LINE_TIME.get(pixel_format)
+        if line_time is None:
+            log.error('No line time known for pixel format %s; falling back '
+                      'to the full-frame 12-bit value %.1f ms.  Set '
+                      'MinFrameTime to override.',
+                      pixel_format, VIEWORKS_READOUT_TIME * 1000)
+            return VIEWORKS_READOUT_TIME
+
+        rows = self.epics_pvs['CamSizeY'].get()
+        if not rows:
+            log.error('SizeY reads %s; falling back to the full-frame 12-bit '
+                      'readout %.1f ms', rows, VIEWORKS_READOUT_TIME * 1000)
+            return VIEWORKS_READOUT_TIME
+        readout = rows * line_time
+
+        # Cross-check against the rate the camera reports, so a disagreement
+        # is visible rather than silent.  The table stays authoritative: it is
+        # per pixel format and comes from the manual.
+        #
+        # Only checked for the 8/10/12 bit group.  GC_AcqLineRate_RBV reads
+        # 115385, i.e. 8.667 us, which matches that group and is where the
+        # camera and the table are known to agree; there is no evidence it
+        # tracks the bit depth, so at 14 or 16 bit it would disagree on every
+        # scan and the warning would be pure noise.
+        if line_time == VIEWORKS_LINE_TIME['Mono12']:
+            line_rate = self.epics_pvs['CamLineRate'].get()
+            if line_rate:
+                reported = rows / line_rate
+                if abs(reported - readout) > 0.05 * readout:
+                    log.warning('readout %.1f ms from the %s line time, but '
+                                'GC_AcqLineRate (%g) implies %.1f ms',
+                                readout * 1000, pixel_format, line_rate,
+                                reported * 1000)
+
+        log.info('readout time: %.1f ms (%d rows x %.3f us, %s)',
+                 readout * 1000, rows, line_time * 1e6, pixel_format)
+        return readout
 
     def begin_scan(self):
         """Performs the operations needed at the very start of a scan.
