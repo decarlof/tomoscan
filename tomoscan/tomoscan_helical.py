@@ -14,6 +14,7 @@ import numpy as np
 from epics import PV
 
 from tomoscan import data_management as dm
+from tomoscan.tomoscan import ScanAbortError, CameraTimeoutError
 from tomoscan.tomoscan_pso import TomoScanPSO
 from tomoscan import log
 
@@ -97,10 +98,43 @@ class TomoScanHelical(TomoScanPSO):
         # Start fly scan
         log.info('start fly scan')
         self.epics_pvs['Rotation'].put(self.epics_pvs['PSOEndTaxi'].get())
-        time_per_angle = self.compute_frame_time()
-        collection_time = self.num_angles * time_per_angle
-        self.wait_camera_done(collection_time + 5.)
-        
+
+        # Wait for camera with stall detection: once the motor should have stopped
+        # (elapsed > motion_time) exit early if no new frame arrives for stall_s.
+        # Avoids the long hang when one trigger is lost (camera stays "Acquiring"
+        # waiting for a trigger that will never come) and, critically, returns
+        # normally instead of raising CameraTimeoutError — so the caller's post-scan
+        # flat/dark collection still runs.
+        start_pos = float(self.epics_pvs['PSOStartTaxi'].get())
+        end_pos   = float(self.epics_pvs['PSOEndTaxi'].get())
+        motion_time = abs(end_pos - start_pos) / float(self.motor_speed)
+        timeout     = motion_time + 60.0   # hard safety cap (preserves prior +60 margin)
+        stall_s     = 3.0                  # seconds without a new frame after motor stop
+
+        t0              = time.time()
+        last_count      = -1
+        last_frame_time = t0
+        while True:
+            if self.epics_pvs['CamAcquireBusy'].value == 0:
+                break                      # camera finished normally
+            if not self.scan_is_running:
+                raise ScanAbortError       # abort requested
+            elapsed = time.time() - t0
+            if elapsed >= timeout:
+                raise CameraTimeoutError()
+            cur_count = self.epics_pvs['CamNumImagesCounter'].value
+            if cur_count != last_count:
+                last_count      = cur_count
+                last_frame_time = time.time()
+            elif elapsed > motion_time and (time.time() - last_frame_time) >= stall_s:
+                log.warning('Fly scan stalled at %d/%d frames after motor stop — stopping camera',
+                            cur_count, self.num_angles)
+                self.epics_pvs['CamAcquire'].put('Done')
+                time.sleep(0.5)
+                break
+            time.sleep(0.2)
+            self.update_status(t0)
+
 
     def abort_scan(self):
         """Performs operations needed if a scan is aborted.
