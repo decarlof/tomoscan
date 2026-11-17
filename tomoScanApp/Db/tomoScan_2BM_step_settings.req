@@ -1,0 +1,10 @@
+# This file is used by autosave to determine what PVs to save
+# It is also used by tomoScan to determine what PVs to create
+
+# This is the file for the TomoScan2BMSTEP derived class.
+
+#######################
+# Random sample shifts
+#######################
+$(P)$(R)RandomShift
+$(P)$(R)RandomShiftAmplitude

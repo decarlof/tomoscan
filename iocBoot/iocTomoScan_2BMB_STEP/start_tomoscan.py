@@ -5,5 +5,6 @@
 from tomoscan.tomoscan_2bm_step import TomoScan2BMSTEP
 ts = TomoScan2BMSTEP(["../../db/tomoScan_settings.req",
                   "../../db/tomoScan_step_settings.req",
-                  "../../db/tomoScan_2BM_settings.req"], 
+                  "../../db/tomoScan_2BM_settings.req",
+                  "../../db/tomoScan_2BM_step_settings.req"],
                  {"$(P)":"2bmb:", "$(R)":"TomoScanStep:"})

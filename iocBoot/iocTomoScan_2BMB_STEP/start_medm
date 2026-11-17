@@ -1,1 +1,1 @@
-medm -x -macro "P=2bmb:,R=TomoScanStep:,BEAMLINE=tomoScan_2BM" ../../tomoScanApp/op/adl/tomoScan.adl  &
+medm -x -macro "P=2bmb:,R=TomoScanStep:,BEAMLINE=tomoScanStep_2BM" ../../tomoScanApp/op/adl/tomoScan.adl  &

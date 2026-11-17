@@ -1,13 +1,29 @@
 file "$(TOP)/db/tomoScan.template"
 {
 pattern
-{  P,        R,        CAMERA,    FILE_PLUGIN,    ROTATION,   SAMPLE_X,  SAMPLE_Y,      CLOSE_SHUTTER,        CLOSE_VALUE,        OPEN_SHUTTER,         OPEN_VALUE}
-{2bmb:, TomoScanStep:, 2bmbPG1:,  2bmbPG1:HDF1:,  2bmb:m102,  2bmb:m63,  2bmb:m25,  2bma:A_shutter:close.VAL,      1,        2bma:A_shutter:open.VAL,        1}
+{  P,        R,         CAMERA,   FILE_PLUGIN,   ROTATION,  SAMPLE_X,   SAMPLE_Y,          CLOSE_SHUTTER,       CLOSE_VALUE,        OPEN_SHUTTER,        OPEN_VALUE}
+{2bmb:, TomoScanStep:, 2bmSP2:,  2bmSP2:HDF1:,  2bmb:m102, 2bmHXP:m1,  2bmHXP:m3, S02BM-PSS:SBS:CloseEPICSC,       1,       S02BM-PSS:SBS:OpenEPICSC,       1}
 }
 
 file "$(TOP)/db/tomoScan_2BM.template"
 {
 pattern
-{  P,        R,           BEAM_READY,               READY_VALUE,    CLOSE_FAST_SHUTTER,   CLOSE_FAST_VALUE,    OPEN_FAST_SHUTTER,   OPEN_FAST_VALUE,         SHUTTER_STATUS,        PVA_PLUGIN,     ROI_PLUGIN,     CB_PLUGIN,      MCT_OPTICS}
-{2bmb:, TomoScanStep:, PA:02BM:STA_A_BEAMREADY_PL,       1,             2bmb:m77,               41,                2bmb:m77,             41,            PA:02BM:STA_A_FES_OPEN_PL, 2bmbSP2:Pva1:,  2bmbSP2:ROI1:,  2bmbSP2:CB1:,   2bm:MCTOptics: }
+# There is no fast shutter at 2bmb, so CLOSE/OPEN_FAST_SHUTTER point at the same B
+# station PSS shutter as CLOSE/OPEN_SHUTTER, matching the iocTomoScan_2BMB settings.
+{  P,        R,              BEAM_READY,          READY_VALUE,    CLOSE_FAST_SHUTTER,    CLOSE_FAST_VALUE,     OPEN_FAST_SHUTTER,     OPEN_FAST_VALUE,          SHUTTER_STATUS,           PVA_PLUGIN,    ROI_PLUGIN,    CB_PLUGIN,     MCT_OPTICS}
+{2bmb:, TomoScanStep:, S02BM-PSS:FES:FEEPSPermitM,      1,     S02BM-PSS:SBS:CloseEPICSC,        1,      S02BM-PSS:SBS:OpenEPICSC,         1,       S02BM-PSS:SBS:BeamBlockingM.VAL, 2bmSP2:Pva1:,  2bmSP2:ROI1:,  2bmSP2:CB1:,  2bm:MCTOptics: }
+}
+
+file "$(TOP)/db/tomoScan_step.template"
+{
+pattern
+{  P,        R}
+{2bmb:, TomoScanStep:}
+}
+
+file "$(TOP)/db/tomoScan_2BM_step.template"
+{
+pattern
+{  P,        R}
+{2bmb:, TomoScanStep:}
 }

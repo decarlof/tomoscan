@@ -1,0 +1,24 @@
+# Database for EPICS PVS for tomography step scanning at APS 2-BM
+# It contains the PVs that are required by the tomoscan_2bm_step derived class
+# in addition to those in tomoScan.template, tomoScan_step.template and
+# tomoScan_2BM.template.
+
+#######################
+# Random sample shifts
+#######################
+
+record(bo, "$(P)$(R)RandomShift")
+{
+   field(DESC, "Random sample shifts")
+   field(ZNAM, "No")
+   field(ONAM, "Yes")
+   field(PINI, "YES")
+}
+
+record(ao, "$(P)$(R)RandomShiftAmplitude")
+{
+   field(DESC, "Random shift amplitude")
+   field(PREC, "4")
+   field(EGU,  "mm")
+   field(PINI, "YES")
+}
