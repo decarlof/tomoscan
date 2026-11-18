@@ -67,6 +67,37 @@ VIEWORKS_LINE_TIME = {
 # Model string reported by 19bmVieworks:cam1:Model_RBV.
 VIEWORKS_MODEL = 'VP-61MX-M18H0'
 
+# ORCA sensor readout and camera-model strings.
+#
+# The base-class compute_frame_time() computes frame_time as
+# max(exposure * margin, readout) for the C16240, which is only correct if the
+# sensor overlaps exposure of frame N+1 with readout of frame N.  Driven by PSO
+# with TriggerMode On the overlap does not happen: the camera completes exposure
+# and readout before accepting the next trigger, so the true minimum retrigger
+# interval is exposure + readout.
+#
+# Treating it as a max() tells the PSO to pulse every ~exposure seconds; the
+# camera then accepts every other trigger, and the scan captures ~half the
+# frames it asked for.  Observed 2026-11-16 at 15-20 ms exposure, 129/256 saved.
+# At <=13 ms exposure the exposure sits below the readout floor so the max()
+# happens to use the readout and the issue hides -- that is why the <=12 ms
+# scans worked and the 15-25 ms ones did not.
+#
+# ORCA_FIRE_READOUT is the datasheet full-frame readout for standard scan mode
+# (~1 / 120.9 fps).  If the 19-BM Orca is ever moved to ultra-quiet mode, that
+# falls to ~1 / 9.66 fps = 103 ms, in which case this constant is wrong by an
+# order of magnitude -- raise MinFrameTime from the GUI or add a readout table
+# keyed off GC_SensorMode.  Unlike the Vieworks the Orca publishes no line-time
+# record we can use to derive this per-ROI, so it stays a constant and the
+# margin covers ROI variation.
+#
+# ORCA_FIRE_READOUT_MARGIN is slightly higher than the Vieworks' 1.05: the
+# Orca readout varies more with ROI and pixel format than this single constant
+# can track, so the margin has to cover that spread rather than just CA jitter.
+ORCA_FIRE_READOUT = 0.009
+ORCA_FIRE_READOUT_MARGIN = 1.10
+ORCA_FIRE_MODELS = ('C16240-20UP', 'ORCA Fire')
+
 # Sense of the ShutterStatus PV.
 #
 # 19-BM reads its front-end shutter through S19BM-PSS:FES:BeamBlockingM, which
@@ -360,6 +391,8 @@ class TomoScan19BM(TomoScanPSO):
         camera_model = self.epics_pvs['CamModel'].get(as_string=True)
         if camera_model == VIEWORKS_MODEL:
             self.set_trigger_mode_vieworks(trigger_mode, num_images)
+        elif camera_model in ORCA_FIRE_MODELS:
+            self.set_trigger_mode_orca_fire(trigger_mode, num_images)
         else:
             log.error('Camera %s is not supported', camera_model)
             exit(1)
@@ -409,40 +442,83 @@ class TomoScan19BM(TomoScanPSO):
             self.epics_pvs['CamTriggerMode'].put('On', wait=True)
             self.wait_pv(self.epics_pvs['CamTriggerMode'], 1)
 
+    def set_trigger_mode_orca_fire(self, trigger_mode, num_images):
+        self.epics_pvs['CamAcquire'].put('Done') ###
+        self.wait_pv(self.epics_pvs['CamAcquire'], 0) ###
+        
+        log.info('set trigger mode: %s', trigger_mode)
+        if trigger_mode == 'FreeRun':
+            self.epics_pvs['CamImageMode'].put('Continuous', wait=True)
+            self.epics_pvs['CamTriggerMode'].put('Off', wait=True)
+            self.wait_pv(self.epics_pvs['CamTriggerMode'], 0)
+            # self.epics_pvs['CamAcquire'].put('Acquire')
+        elif trigger_mode == 'Internal':
+            self.epics_pvs['CamTriggerMode'].put('Off', wait=True)
+            self.wait_pv(self.epics_pvs['CamTriggerMode'], 0)
+            self.epics_pvs['CamImageMode'].put('Multiple')            
+            self.epics_pvs['CamNumImages'].put(num_images, wait=True)
+        else: # set camera to external triggering
+            self.epics_pvs['CamTriggerMode'].put('Off', wait=True)
+            if 'CamTriggerSource' in self.epics_pvs:
+                self.epics_pvs['CamTriggerSource'].put('External', wait=True)
+            self.epics_pvs['CamImageMode'].put('Multiple')            
+
+            self.epics_pvs['CamNumImages'].put(self.num_angles, wait=True)
+            self.epics_pvs['CamTriggerMode'].put('On', wait=True)
+            self.wait_pv(self.epics_pvs['CamTriggerMode'], 1)
+	    
+    
     def compute_frame_time(self):
-        """Computes the time to collect and read out an image from the Vieworks.
+        """Computes the time to collect and read out an image from the camera.
 
-        TomoScan.compute_frame_time() keys a hardcoded table off the camera
-        model and has no entry for this one.  Worse than merely returning
-        nothing, it would raise: ``pixel_format`` is only bound inside the
-        per-model branches, so with no branch taken the ``log.error`` that
-        reports the unsupported camera raises UnboundLocalError while
-        formatting its own message.  The base class docstring directs
-        single-beamline cameras to override here, which is what this does.
-
-        Any other camera is handed back to the base class.
+        Handles the Vieworks VP-61MX and the Orca Fire (C16240) in this class;
+        any other camera is handed back to the base class.  TomoScan.compute_
+        frame_time() keys a hardcoded table off the camera model and has no
+        entry for the VP-61MX.  Worse than merely returning nothing, it would
+        raise: ``pixel_format`` is only bound inside the per-model branches, so
+        with no branch taken the ``log.error`` that reports the unsupported
+        camera raises UnboundLocalError while formatting its own message.  The
+        base class docstring directs single-beamline cameras to override here,
+        which is what this does.
 
         **The period is exposure + readout, not max() of the two.**  The base
         class and most derived classes take the larger of the two, which is
         right for a camera that overlaps the exposure of frame N+1 with the
-        readout of frame N.  This sensor does not: with ``TriggerMode On`` it
-        completes exposure and readout before the next frame starts (manual
-        section 8.6.2), so the exposure is added to the period rather than
-        hidden inside the readout.  Taking the maximum under-estimates as soon
-        as the exposure is comparable with the readout -- at 100 ms exposure
-        it asks for 105 ms where the camera needs about 130 ms.
+        readout of frame N.  Neither of these cameras does so under external
+        triggering: with ``TriggerMode On`` each one completes exposure and
+        readout before the next frame starts, so the exposure is added to the
+        period rather than hidden inside the readout.  Taking the maximum
+        under-estimates as soon as the exposure is comparable with the readout
+        -- at 100 ms on the Vieworks it asks for 105 ms where the camera needs
+        about 130 ms; on the Orca at 15-20 ms exposure it asks for ~exposure
+        while the camera needs ~exposure + 10 ms and accepts every other PSO
+        pulse, which is why Orca scans here were saving half their frames.
 
-        **Readout is rows x line time**, so it follows the vertical ROI and
-        the pixel format rather than being a constant.  See
-        ``VIEWORKS_LINE_TIME``.
+        For the Vieworks, **readout is rows x line time**, so it follows the
+        vertical ROI and the pixel format rather than being a constant; see
+        ``VIEWORKS_LINE_TIME``.  For the Orca it is a flat ``ORCA_FIRE_READOUT``
+        with a larger margin covering ROI/pixel-format variation; see the
+        comment on that constant.
         """
         camera_model = self.epics_pvs['CamModel'].get(as_string=True)
-        if camera_model != VIEWORKS_MODEL:
+        if camera_model == VIEWORKS_MODEL:
+            exposure = self.epics_pvs['CamAcquireTimeRBV'].value
+            readout = self.compute_readout_time()
+            margin = VIEWORKS_READOUT_MARGIN
+        elif camera_model in ORCA_FIRE_MODELS:
+            # The base class's Orca branch computes max(exposure, readout),
+            # which is wrong whenever exposure exceeds the readout: the camera
+            # does not overlap exposure N+1 with readout N under external
+            # triggering, so it accepts every second PSO pulse and the scan
+            # saves ~half the frames.  Use exposure + readout here instead; see
+            # the comment on ORCA_FIRE_READOUT for why readout is a constant.
+            exposure = self.epics_pvs['CamAcquireTimeRBV'].value
+            readout = ORCA_FIRE_READOUT
+            margin = ORCA_FIRE_READOUT_MARGIN
+        else:
             return super().compute_frame_time()
 
-        exposure = self.epics_pvs['CamAcquireTimeRBV'].value
-        readout = self.compute_readout_time()
-        frame_time = (exposure + readout) * VIEWORKS_READOUT_MARGIN
+        frame_time = (exposure + readout) * margin
 
         # MinFrameTime is a floor on the frame time, which is what its name
         # says.  An earlier version had it override the computed readout
@@ -459,9 +535,9 @@ class TomoScan19BM(TomoScanPSO):
         else:
             log.info('frame time: %.2f ms (%.1f ms exposure + %.1f ms readout, '
                      'x %.2f)', frame_time * 1000, exposure * 1000,
-                     readout * 1000, VIEWORKS_READOUT_MARGIN)
+                     readout * 1000, margin)
 
-        self.readout_margin = VIEWORKS_READOUT_MARGIN
+        self.readout_margin = margin
         return frame_time
 
     def compute_readout_time(self):
