@@ -12,6 +12,8 @@ import traceback
 import uuid
 
 import h5py
+import numpy as np
+import xml.etree.ElementTree as ET
 
 from epics import PV
 from pathlib import Path
@@ -97,6 +99,39 @@ VIEWORKS_MODEL = 'VP-61MX-M18H0'
 ORCA_FIRE_READOUT = 0.009
 ORCA_FIRE_READOUT_MARGIN = 1.10
 ORCA_FIRE_MODELS = ('C16240-20UP', 'ORCA Fire')
+
+# ---------------------------------------------------------------------------
+# /measurement metadata written into the raw file after a scan.
+#
+# The ORCA IOC declares NDAttributesFile and NDAttributesMacros but NOTHING in
+# the detectors package reads them -- there is no XML parsing anywhere in it --
+# so those PVs are inert and no /measurement group is ever written.  For the
+# Vieworks, areaDetector does this work; for the ORCA tomoscan has to, which is
+# what add_measurement_metadata() below is for.
+#
+# Both XML files are the ones the Vieworks IOC already uses (they are symlinked
+# into its iocBoot directory), so the two cameras produce the same structure and
+# stay in step whenever the XML changes.
+METADATA_ATTRIBUTES_XML = ('/home/beams/FACTUSER/conda/dxfile-decarlof/doc/demo/'
+                           'areadetector/19-BM/TomoScanDetectorAttributes.xml')
+METADATA_LAYOUT_XML = ('/home/beams/FACTUSER/conda/dxfile-decarlof/doc/demo/'
+                       'areadetector/19-BM/TomoScanLayout.xml')
+
+# $(DET) sources name areaDetector records that the ORCA -- a caproto IOC, not
+# areaDetector -- does not serve.  These five are the same quantity under
+# another name.  Ten others (SerialNumber, FirmwareVersion, SDKVersion,
+# DriverVersion, ADCoreVersion, HDFPluginVersion, Gain, GainAuto, ExposureAuto,
+# ConvertPixelFormat) have no counterpart at all and are skipped rather than
+# written as NaN: an absent dataset says "this camera has no such thing", a NaN
+# says "we tried to measure it and failed".  Writing NaN is what prompted the
+# "missing values in the metadata" report from the 2026-11 users.
+ORCA_PV_ALIASES = {
+    'cam1:MinX_RBV':            'cam1:OffsetX_RBV',
+    'cam1:MinY_RBV':            'cam1:OffsetY_RBV',
+    'cam1:TemperatureActual':   'cam1:SensorTemperature_RBV',
+    'cam1:FrameRate_RBV':       'cam1:AcquisitionFrameRate_RBV',
+    'cam1:FrameRateEnable_RBV': 'cam1:FrameRateEnable',
+}
 
 # Sense of the ShutterStatus PV.
 #
@@ -609,6 +644,9 @@ class TomoScan19BM(TomoScanPSO):
 
         self.triggers_exhausted = False
 
+        # start_date must be read now: it and end_date share one clock PV.
+        self.capture_open_metadata()
+
         # Set data directory
         file_path = Path(self.epics_pvs['DetectorTopDir'].get(as_string=True))
         file_path = file_path.joinpath(self.epics_pvs['ExperimentYearMonth'].get(as_string=True) + '-'
@@ -1016,9 +1054,159 @@ class TomoScan19BM(TomoScanPSO):
         # Write the theta dataset to the raw file
         self.add_theta()
 
+        # Write /measurement.  The ORCA IOC ignores NDAttributesFile, so
+        # without this its files carry no metadata at all.
+        self.add_measurement_metadata()
+
         # Let TomoScanPSO.end_scan() save the .config, restore FreeRun, reset
         # the rotation speed and move the sample back in.
         super().end_scan()
+
+
+    def _metadata_plan(self):
+        """Parse the two XML files into a list of datasets to write.
+
+        Returns ``[(hdf5_path, attribute_name, pv_name, dbrtype, when, extras)]``
+        where ``extras`` is the dict of HDF5 attributes the layout hangs off the
+        dataset, such as units.  Returns ``[]`` if either file is unreadable --
+        a missing XML must not take a scan down.
+
+        ``$(DET)`` resolves to whichever camera tomoscan is actually driving, so
+        this follows ``CameraPVPrefix`` and works for either camera.  ``$(TC)``
+        is the tomoscan prefix, recovered from a PV whose name we already know.
+        """
+        try:
+            attrs = {}
+            for a in ET.parse(METADATA_ATTRIBUTES_XML).getroot().iter('Attribute'):
+                attrs[a.get('name')] = (a.get('source') or '', a.get('dbrtype') or '')
+
+            det = self.pv_prefixes['Camera']
+            # e.g. '19bm:TomoScan:ExposureTime' -> '19bm:TomoScan:'
+            tc = self.epics_pvs['ExposureTime'].pvname[:-len('ExposureTime')]
+
+            plan, root = [], ET.parse(METADATA_LAYOUT_XML).getroot()
+
+            def walk(node, path):
+                for child in node:
+                    if child.tag == 'group':
+                        walk(child, path + '/' + child.get('name'))
+                    elif (child.tag == 'dataset'
+                          and child.get('source') == 'ndattribute'):
+                        name = child.get('ndattribute')
+                        if name not in attrs:
+                            continue
+                        source, dbr = attrs[name]
+                        source = source.replace('$(DET)', det).replace('$(TC)', tc)
+                        # Re-point the few records the ORCA serves under another
+                        # name.  Keyed on the part after the prefix so the table
+                        # stays camera-agnostic.
+                        if source.startswith(det):
+                            tail = source[len(det):]
+                            if tail in ORCA_PV_ALIASES:
+                                source = det + ORCA_PV_ALIASES[tail]
+                        extras = {}
+                        for sub in child:
+                            if sub.tag == 'attribute' and sub.get('name'):
+                                extras[sub.get('name')] = sub.get('value') or ''
+                        plan.append((path + '/' + child.get('name'), name,
+                                     source, dbr, child.get('when') or 'OnFileClose',
+                                     extras))
+            walk(root, '')
+            return plan
+        except Exception:
+            log.exception('Could not build the metadata plan from the XML files')
+            return []
+
+    def capture_open_metadata(self):
+        """Read the attributes the layout marks ``OnFileOpen``, at scan start.
+
+        Only ``start_date`` is in this class.  It and ``end_date`` both read the
+        same clock PV (``S:IOC:timeOfDayISO8601``), so reading start_date at the
+        end would silently make it a duplicate of end_date -- the layout file
+        carries a comment about exactly that trap.
+        """
+        self.metadata_at_open = {}
+        for _path, name, pv_name, dbr, when, _extras in self._metadata_plan():
+            if when != 'OnFileOpen':
+                continue
+            try:
+                pv = PV(pv_name)
+                value = pv.get(as_string=(dbr == 'DBR_STRING'), timeout=3)
+                if value is not None:
+                    self.metadata_at_open[name] = value
+                    log.info('captured %s at scan start: %s', name, value)
+            except Exception:
+                log.warning('could not read %s (%s) at scan start', name, pv_name)
+
+    def add_measurement_metadata(self):
+        """Write ``/measurement`` into the raw file from the areaDetector XMLs.
+
+        areaDetector does this for the Vieworks through NDAttributes; the ORCA
+        IOC accepts NDAttributesFile and ignores it, so without this the file
+        has no metadata at all -- only /exchange and /defaults.
+
+        PVs that do not resolve are skipped and listed once, not written as NaN.
+        """
+        plan = self._metadata_plan()
+        if not plan:
+            return
+
+        full_file_name = self.epics_pvs['FPFullFileName'].get(as_string=True)
+        if not full_file_name or not os.path.exists(full_file_name):
+            log.error('Metadata: %s does not exist', full_file_name)
+            return
+
+        # Create every channel first, then wait once.  Connecting them one at
+        # a time starves the CA search queue: ten of these PVs do not exist on
+        # the ORCA, their unanswered searches soak up the retry budget, and
+        # real PVs later in the list then time out.  Measured 2026-11-18 --
+        # sequential gave 76 of 106 datasets and the failures were ALL $(DET)
+        # ones; batching gives 96, the only misses being the ten the camera
+        # genuinely does not serve.
+        channels = {}
+        for _path, _name, pv_name, _dbr, _when, _extras in plan:
+            if pv_name not in channels:
+                channels[pv_name] = PV(pv_name)
+        for pv in channels.values():
+            pv.wait_for_connection(timeout=0.01)
+        time.sleep(5.0)
+
+        written, skipped = 0, []
+        try:
+            with h5py.File(full_file_name, 'a') as f:
+                for path, name, pv_name, dbr, when, extras in plan:
+                    if path in f:
+                        continue
+                    try:
+                        if when == 'OnFileOpen' and name in getattr(
+                                self, 'metadata_at_open', {}):
+                            value = self.metadata_at_open[name]
+                        elif not channels[pv_name].connected:
+                            skipped.append(name)
+                            continue
+                        else:
+                            value = channels[pv_name].get(
+                                as_string=(dbr == 'DBR_STRING'), timeout=3)
+                        if value is None:
+                            skipped.append(name)
+                            continue
+                        if dbr == 'DBR_STRING' or isinstance(value, str):
+                            dset = f.create_dataset(
+                                path, data=np.bytes_(str(value)))
+                        else:
+                            dset = f.create_dataset(path, data=value)
+                        for key, val in extras.items():
+                            dset.attrs[key] = val
+                        written += 1
+                    except Exception:
+                        skipped.append(name)
+            log.info('metadata: wrote %d datasets, skipped %d', written,
+                     len(skipped))
+            if skipped:
+                log.info('metadata: no PV for %s', ', '.join(sorted(set(skipped))))
+        except Exception:
+            log.error('Metadata: failed writing to %s', full_file_name)
+            traceback.print_exc(file=sys.stdout)
 
     def add_theta(self):
         """Create ``/exchange/theta`` in the raw HDF5 file.
