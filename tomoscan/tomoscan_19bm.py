@@ -259,6 +259,41 @@ class TomoScan19BM(TomoScanPSO):
         # by HDF5FrameLocation before subtracting proj_ids[0].
         self.epics_pvs['CamUniqueIdMode'].put('Driver', wait=True)
 
+        # Tell the control screen which camera panel is live.
+        #
+        # mct_main.adl draws two camera panels side by side, ORCA on $(AD0)
+        # and Vieworks on $(AD1), and outlines the selected one in green via
+        # a dynamic attribute on this record -- calc="A==0" and "A==1".  MEDM
+        # reads a visibility channel as a number, and CameraPVPrefix is a
+        # 256-element char waveform that refuses a DBR_DOUBLE read, so the
+        # screen cannot key off the prefix string directly.  Hence a small
+        # numeric record.
+        #
+        # Driven from CamModel rather than CameraPVPrefix on purpose: the
+        # model is what this server actually connected to, so a prefix naming
+        # a dead IOC leaves the value at Unknown and neither box lights,
+        # instead of claiming a camera that is not there.
+        #
+        # Deliberately NOT in tomoScan_19BM_settings.req.  That file is both
+        # the autosave request list and the server's PV list, so adding it
+        # there would have autosave restore a stale value at boot -- the same
+        # trap that kept UniqueIdMode wrong for weeks.  This is derived state
+        # and is rewritten on every server start, so the PV is made here.
+        try:
+            camera_model = self.epics_pvs['CamModel'].get(as_string=True)
+            if camera_model in ORCA_FIRE_MODELS:
+                selected = 0
+            elif camera_model == VIEWORKS_MODEL:
+                selected = 1
+            else:
+                selected = 2          # Unknown
+            tc_prefix = self.epics_pvs['ExposureTime'].pvname[:-len('ExposureTime')]
+            PV(tc_prefix + 'CameraSelected').put(selected, wait=True, timeout=5)
+            log.info('CameraSelected = %d (%s)', selected, camera_model)
+        except Exception:
+            log.warning('could not set CameraSelected; the screen will show '
+                        'neither camera as selected')
+
         # Enable auto-increment on file writer
         self.epics_pvs['FPAutoIncrement'].put('Yes')
 

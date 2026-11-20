@@ -104,7 +104,7 @@ record(ao, "$(P)$(R)ScintillatorThickness")
 
 record(ao, "$(P)$(R)ImagePixelSize")
 {
-   field(PREC, "2")
+   field(PREC, "5")
    field(EGU,  "microns")
    field(PINI, "YES")
 }
@@ -113,6 +113,18 @@ record(ao, "$(P)$(R)DetectorPixelSize")
 {
    field(PREC, "2")
    field(EGU,  "microns")
+   field(PINI, "YES")
+}
+
+record(mbbo, "$(P)$(R)CameraSelected")
+{
+   field(ZRVL, "0")
+   field(ZRST, "ORCA")
+   field(ONVL, "1")
+   field(ONST, "Vieworks")
+   field(TWVL, "2")
+   field(TWST, "Unknown")
+   field(VAL,  "2")
    field(PINI, "YES")
 }
 
